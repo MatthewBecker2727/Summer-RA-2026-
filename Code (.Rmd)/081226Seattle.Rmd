@@ -1,0 +1,742 @@
+---
+title: "Seattle Crime RD"
+output: 
+  html_notebook:
+    code_folding: hide
+date: "2026-08-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("suncalc")
+#install.packages("lutz")
+library(mosaic)
+library(data.table)
+library(lubridate)
+library(suncalc)
+library(lutz)
+library(tidyverse)
+```
+
+
+```{r, include=FALSE}
+zip_path <- "Data/raw/Seattle/Crimes.zip"
+temp_dir <- tempdir()
+
+extracted_files <- unzip(zip_path, exdir = temp_dir)
+
+csv_files <- extracted_files[grepl("\\.csv$", extracted_files)]
+
+crime <- rbindlist(lapply(csv_files, fread), fill = TRUE)
+```
+
+```{r}
+colnames(crime)
+```
+
+
+```{r, warning = FALSE, include=FALSE}
+#for this + NO + san fran: make crime num category like in sample code to get the highest offense only 
+
+crime_sorted <- crime %>%
+rename_all(~ str_replace_all(tolower(.), "[ _]", ".")) %>%
+  distinct(report.number, .keep_all = TRUE) %>%
+  mutate(
+    datetime = mdy_hms(offense.end.datetime), 
+   date = as.Date(datetime),
+    time = format(datetime, "%H:%M:%S"),
+    
+    year = year(datetime),
+    month = lubridate::floor_date(datetime, "month"),
+    day_of_week = lubridate::wday(datetime, week_start = 1),
+    hour = hour(datetime), 
+    minute = minute(datetime),
+    
+crime_disorder = as.integer(offense %in% c(
+"Intimidation", "Family Offenses, Nonviolent")),
+crime_gun = as.integer(offense == "Weapon Law Violations"),
+crime_robbery = as.integer(offense== "Robbery"),
+crime_aggravated_assault = as.integer(offense == "Aggravated Assault"),
+crime_burglary = as.integer(offense == "Burglary/Breaking & Entering"),
+crime_theft = as.integer(offense %in% c(
+ "All Other Larceny", "Shoplifting", "Theft From Building", "Pocket-picking")),
+crime_mv_theft = as.integer(offense  %in% c(
+   "Motor Vehicle Theft", "Theft From Motor Vehicle", "Theft of Motor Vehicle Parts or Accessories")),
+    
+ crime_violent = crime_robbery + crime_aggravated_assault,
+    crime_property = crime_burglary + crime_theft + crime_mv_theft,
+    crime_index = crime_violent + crime_property
+
+  )
+```
+
+
+```{r, include = FALSE}
+#load cad.event.number to prevent double counting crimes, keep unique cad numbers
+
+vfiles <- list.files("Data/raw/Seattle", pattern = "\\.csv$", full.names = TRUE)
+dfcalls_list <- vector("list", length(vfiles))
+
+
+columns_selected <- c(
+  "CAD Event Number",
+  "CAD Event Clearance Description",
+  "Call Type",
+  "Priority",
+  "Initial Call Type",
+  "Final Call Type",
+  "CAD Event Original Time Queued",
+  "CAD Event Arrived Time",
+  "CAD Event Response Category",
+  "Call Sign Dispatch Time"
+)
+
+for (X in seq_along(vfiles)) {
+  # fread now selects ONLY these exact raw columns directly from disk
+  dftemp <- fread(vfiles[X], select = columns_selected, check.names = TRUE) %>% 
+    rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v"))
+  
+  if (grepl("Weekly", vfiles[X])) {
+    dftemp <- dftemp %>% rename(dateend = date)
+  }
+  
+  dfcalls_list[[X]] <- dftemp
+}
+
+calls <- bind_rows(dfcalls_list)
+rm(dftemp, X, vfiles, dfcalls_list); gc()
+
+```
+
+```{r}
+colnames(calls)
+```
+
+```{r, include = FALSE}
+
+calls <- calls %>% 
+  rename(
+     response_datetime = call.sign.dispatch.time)
+
+
+calls <- calls %>%
+  mutate(
+   response_dt_parsed = parse_date_time(response_datetime, orders = c("mdY HMS p", "mdY HMS", "mdY HM p", "mdY HM", "Ybd HMS p", "Ybd HMS")),
+  
+  
+    response_date = as.Date(response_dt_parsed),
+ 
+    response_time = format(response_dt_parsed, "%H:%M:%S")
+  
+  ) 
+
+```
+
+
+```{r}
+#
+calls_sorted <- calls %>%
+  distinct(cad.event.number, .keep_all = TRUE) %>%
+  mutate(
+    type_clean = str_trim(toupper(initial.call.type)),
+    calls_disorder = as.integer(type_clean %in% c("URINATING, DEFECATING IN PUBLIC", "TRU - DISTURBANCE", "LIQUOR VIOLATIONS - MINOR", "SEX IN PUBLIC PLACE (INCL MASTURBATION)", "VICE - PROSTITUTION", "PANHANDLING, AGGRESSIVE", "LEWD -  (EXPOSING, FLASHING)", "LIQUOR VIOLATIONS - ADULT", "OBS - NOISE - DISTURBANCE (PARTY, ETC)", "OBS - FIGHT - IP - PHYSICAL (NO WEAPONS)", "NARCOTICS - VIOLATIONS (LOITER, USE, SELL, NARS)", "NUISANCE", "DISTURBANCE")),
+    calls_behavior = as.integer(type_clean %in% c("ABANDONED VEHICLE", "OBS - PROWLER", "TRU - SUSPICIOUS CIRCUMSTANCES", "TRU - HARASSMENT","OBS - PROWLER - IP/JO", "OBS - FIGHT - VERBAL/ORAL (NO WEAPONS)", "DISTURBANCE - DV - NO ASLT", "TRESPASS", "SUSPICIOUS PERSON, VEHICLE, OR INCIDENT")),
+    calls_traffic = as.integer(type_clean  %in% c("TRAFFIC - ROAD RAGE", "OBS - TRU - ACC - HIT AND RUN", "OBS - MVC - UNK INJURIES", "OBS - HIT AND RUN (NO INJURIES). INCLUDES IP/JO", "OBS - ACC - WITH INJURIES (INCLUDES HIT AND RUN)", "MVC - COLLISION (ALL)", "OBS - MVC - NON INJURY, BLOCKING", "TRU - MVC - HIT AND RUN", "MVC - HIT AND RUN", "OBS - MVC - WITH INJURIES (INCLUDES HIT AND RUN)")),
+    calls_gun = as.integer(type_clean %in% c("PROPERTY - DAMAGE (GUN RELATED)", "WEAPN - GUN,DEADLY WPN (NO THRTS/ASLT/DIST)", "ASLT - PERSON SHOT OR SHOT AT", "OBS WEAPN-IP/JO-GUN,DEADLY WPN (NO THRT/ASLT/DIST)", "SHOTS HEARD - IN PROGRESS")),
+         
+        calls_robbery = as.integer(type_clean  %in% c("OBS - PURSE SNATCH - ROBBERY", "OBS - PURSE SNATCH - IP/JO - ROBBERY", "ROBBERY - CRITICAL (INCLUDES STRONG ARM)")),
+        calls_aggravated_assault = as.integer(type_clean  %in% c("FIGHT - WITH WEAPONS", "FIGHT - CRITICAL WITH WEAPONS", "ASLT - DV CRITICAL", "ASLT - CRITICAL (NO SHOOTINGS)")),
+        calls_burglary = as.integer(type_clean  %in% c("TRU - COMMERCIAL BURGLARY", "OBS - BURG - IP/JO - COMM BURG (INCLUDES SCHOOLS)", "BURG - COMM BURGLARY", "BURG - OCCUPIED RESD", "BURG - RESD (INCL UNOCC STRUCTURES ON PROP)")),
+        calls_theft = as.integer(type_clean  %in% c("TRU - SHOPLIFT", "OBS - SECONDARY - FORGERY/BUNCO/SCAMS/ID THEFT", "OBS - SECONDARY - THEFT", "TRU - THEFT", "SHOPLIFT - THEFT", "THEFT (DOES NOT INCLUDE SHOPLIFT OR SVCS)")),
+        calls_mv_theft = as.integer(type_clean  %in% c("CARJACKING - ROBBERY", "TRU - AUTO THEFT", "AUTO THEFT - VEH THEFT OR THEFT AND RECOVERY")),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+    
+    datetime = lubridate::parse_date_time(response_datetime, orders = c("mdy_IMSp", "Ybd_IMSp", "mdy_HMS", "ymd_HMS", "mdy_HM")),
+    date = as.Date(datetime),
+    year = year(datetime),
+    month = lubridate::floor_date(datetime, "month"),
+    day_of_week = lubridate::wday(datetime, week_start = 1),
+    hour = hour(datetime), 
+    minute = minute(datetime)
+    ) %>% 
+    filter(!is.na(minute), !is.na(hour), !is.na(day_of_week), !is.na(date), !is.na(month))
+```
+
+```{r, fig.width=10}
+by_minute <- crime_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(minute = minute)
+
+ggplot(by_minute, aes(minute, n)) +
+  geom_line() + 
+  scale_x_continuous(breaks = seq(0, 59, by = 5)) +
+  labs(title = "Seattle Reported Times by Minute of the Hour", x = "Minute", y = "crime") +
+  theme_minimal()
+```
+
+```{r, fig.width=10}
+by_minute <- crime_sorted %>%
+  filter(year %in% 2012:2024) %>%
+  count(minute = minute, year)
+
+ggplot(by_minute, aes(minute, n)) +
+  geom_line() + 
+  facet_wrap(~year, scale = "free_y") +
+  scale_x_continuous(breaks = seq(0, 59, by = 10)) +
+   labs(title = "Seattle Reported Times by Minute of the Hour", x = "Minute", y = "crime") +
+  theme_minimal()
+```
+
+```{r, fig.width=10}
+by_minute_month <- crime_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  mutate(month_clean = lubridate::month(month, label = TRUE)) %>%
+  count(month_clean, minute)
+
+ggplot(by_minute_month, aes(minute, n)) +
+  geom_line() + 
+  facet_wrap(~month_clean, scales = "free_y") +
+  scale_x_continuous(breaks = seq(0, 59, by = 15)) +
+  labs(title = "Seattle Reported Times by Minute of the Hour", x = "Minute", y = "crime") +
+  theme_minimal() 
+```
+```{r, fig.width=10}
+#hr of day
+crime_by_hour <- crime_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(hour = hour) %>%
+  mutate(source = "Crime Reports")
+
+calls_by_hour <- calls_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(hour = hour) %>%
+  mutate(source = "Calls for Service")
+
+by_hour_combined <- bind_rows(crime_by_hour, calls_by_hour)
+
+ggplot(by_hour_combined, aes(hour, n, color = source)) +
+  geom_line() + 
+  scale_x_continuous(breaks = 0:24) +
+  labs(title = "Seattle Reported Times by Hour of the Day", x = "Hour", y = "Calls") +
+  theme_minimal()
+```
+
+```{r, fig.width=10}
+#hr of day
+crime_by_hour <- crime_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(hour = hour) %>%
+  mutate(source = "Crime Reports")
+
+calls_by_hour <- calls_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(hour = hour) %>%
+  mutate(source = "Calls for Service")
+
+by_hour_combined <- bind_rows(crime_by_hour, calls_by_hour)
+
+by_hour_pct <- by_hour_combined %>%
+  group_by(source) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ungroup()
+
+ggplot(by_hour_pct, aes(hour, pct, color = source)) +
+  geom_line() +
+  scale_x_continuous(breaks = 0:24) +
+  labs(title = "Seattle Reported Times by Hour of the Day (% of daily total)",
+       x = "Hour", y = "% of Calls") +
+  theme_minimal()
+
+```
+
+
+
+```{r, fig.width = 10, warning = FALSE}
+#hr of day type
+
+crime_sorted_yr <- crime_sorted %>% filter(year %in% 2012:2024)
+
+crime_by_hour_type <- bind_rows(
+  crime_sorted_yr %>% filter(crime_robbery == 1) %>% count(hour = hour) %>% mutate(type = "Robbery"),
+  crime_sorted_yr %>% filter(crime_aggravated_assault == 1) %>% count(hour = hour) %>% mutate(type = "Aggravated Assault"),
+  crime_sorted_yr %>% filter(crime_burglary == 1) %>% count(hour = hour) %>% mutate(type = "Burglary"),
+  crime_sorted_yr %>% filter(crime_theft == 1) %>% count(hour = hour) %>% mutate(type = "Theft"),
+  crime_sorted_yr %>% filter(crime_mv_theft == 1) %>% count(hour = hour) %>% mutate(type = "MV Theft"),
+  crime_sorted_yr %>% filter(crime_disorder == 1) %>% count(hour = hour) %>% mutate(type = "Disorder"),
+  crime_sorted_yr %>% filter(crime_gun == 1) %>% count(hour = hour) %>% mutate(type = "Gunshots"),
+  crime_sorted_yr %>% filter(crime_violent == 1) %>% count(hour = hour) %>% mutate(type = "Violent Crime"),
+  crime_sorted_yr %>% filter(crime_property == 1) %>% count(hour = hour) %>% mutate(type = "Property Crime")
+) %>%
+  mutate(source = "Crime Reports")
+
+calls_sorted_yr <- calls_sorted %>% filter(year %in% 2012:2024)
+
+calls_by_hour_type <- bind_rows(
+  calls_sorted_yr %>% filter(calls_robbery == 1) %>% count(hour = hour) %>% mutate(type = "Robbery"),
+  calls_sorted_yr %>% filter(calls_aggravated_assault == 1) %>% count(hour = hour) %>% mutate(type = "Aggravated Assault"),
+  calls_sorted_yr %>% filter(calls_burglary == 1) %>% count(hour = hour) %>% mutate(type = "Burglary"),
+  calls_sorted_yr %>% filter(calls_theft == 1) %>% count(hour = hour) %>% mutate(type = "Theft"),
+  calls_sorted_yr %>% filter(calls_mv_theft == 1) %>% count(hour = hour) %>% mutate(type = "MV Theft"),
+  calls_sorted_yr %>% filter(calls_disorder == 1) %>% count(hour = hour) %>% mutate(type = "Disorder"),
+  calls_sorted_yr %>% filter(calls_gun == 1) %>% count(hour = hour) %>% mutate(type = "Gunshots"),
+  calls_sorted_yr %>% filter(calls_violent == 1) %>% count(hour = hour) %>% mutate(type = "Violent Crime"),
+  calls_sorted_yr %>% filter(calls_property == 1) %>% count(hour = hour) %>% mutate(type = "Property Crime")
+) %>%
+  mutate(source = "Calls for Service")
+
+by_hour_type_combined <- bind_rows(crime_by_hour_type, calls_by_hour_type)
+
+# graphed distribution of 911 times by hour
+ggplot(by_hour_type_combined, aes(hour, n, color = source)) +
+  geom_line() +
+  facet_wrap(~type, scales = "free_y") +
+  scale_x_continuous(breaks = seq(0, 24, by = 4)) +
+  labs(title = "Seattle Reported Times by Hour of the Day and Call Type",
+       x = "Hour", y = "Calls", color = "Source") +
+  theme_minimal()
+
+```
+
+```{r, include=FALSE}
+rm(by_hour_type_combined, by_hour_pct, by_minute, by_minute_month)
+```
+
+
+```{r, fig.width= 10}
+by_day_week <- crime_sorted %>% 
+   filter(year %in% 2012:2024) %>%
+  count(day = day_of_week)
+  
+ggplot(by_day_week, aes(day, n, group = 1)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Seattle Reported crime by Day of the Week", x = "Day", y = "crime") +
+  theme_minimal()
+```
+
+```{r, fig.width = 10, warning = FALSE}
+by_week_type <- crime_sorted %>% 
+  filter(year %in% 2012:2024, !is.na(day_of_week)) %>%
+  {
+    df <- .
+    bind_rows(
+      df %>% filter(crime_robbery == 1) %>% count(day = day_of_week) %>% mutate(type = "Robbery"),
+      df %>% filter(crime_aggravated_assault == 1) %>% count(day = day_of_week) %>% mutate(type = "Aggravated Assault"),
+      df %>% filter(crime_burglary == 1) %>% count(day = day_of_week) %>% mutate(type = "Burglary"),
+      df %>% filter(crime_theft == 1) %>% count(day = day_of_week) %>% mutate(type = "Theft"),
+      df %>% filter(crime_mv_theft == 1) %>% count(day = day_of_week) %>% mutate(type = "MV Theft"),
+      df %>% filter(crime_disorder == 1) %>% count(day = day_of_week) %>% mutate(type = "Disorder"),
+      df %>% filter(crime_gun == 1) %>% count(day = day_of_week) %>% mutate(type = "Gunshots"),
+      df %>% filter(crime_violent == 1) %>% count(day = day_of_week) %>% mutate(type = "Violent Crime"),
+      df %>% filter(crime_property == 1) %>% count(day = day_of_week) %>% mutate(type = "Property Crime")
+    )
+  } %>%
+  filter(!is.na(type), !is.na(day))
+
+ggplot(by_week_type, aes(day, n, color = type, group = type)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~type, scales = "free_y") +
+  labs(title = "Seattle Reported by Day of the Week and Type", x = "Day", y = "crime") +
+  theme_minimal()
+```
+
+```{r, fig.width = 10}
+#day/year
+
+by_date <- crime_sorted %>% 
+   filter(year %in% 2012:2024) %>%
+  count(date = date)
+
+ggplot(by_date, aes(date, n)) +
+  geom_line(alpha = .7) + 
+  scale_x_date(date_labels = "%b-%d-%y", date_breaks = "6 months") +
+  labs(title = "Seattle Reported Times by Day Timeline", x = "Date", y = "crime") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5)) 
+```
+
+```{r, fig.width = 10, warning = FALSE}
+by_day_type <- crime_sorted %>% 
+  filter(year %in% 2012:2024, !is.na(date)) %>%
+  {
+    df <- .
+    bind_rows(
+      df %>% filter(crime_robbery == 1) %>% count(day = date) %>% mutate(type = "Robbery"),
+      df %>% filter(crime_aggravated_assault == 1) %>% count(day = date) %>% mutate(type = "Aggravated Assault"),
+      df %>% filter(crime_burglary == 1) %>% count(day = date) %>% mutate(type = "Burglary"),
+      df %>% filter(crime_theft == 1) %>% count(day = date) %>% mutate(type = "Theft"),
+      df %>% filter(crime_mv_theft == 1) %>% count(day = date) %>% mutate(type = "MV Theft"),
+      df %>% filter(crime_disorder == 1) %>% count(day = date) %>% mutate(type = "Disorder"),
+      df %>% filter(crime_gun == 1) %>% count(day = date) %>% mutate(type = "Gunshots"),
+      df %>% filter(crime_violent == 1) %>% count(day = date) %>% mutate(type = "Violent Crime"),
+      df %>% filter(crime_property == 1) %>% count(day = date) %>% mutate(type = "Property Crime")
+    )
+  } %>%
+  filter(!is.na(type), !is.na(day))
+
+ggplot(by_day_type, aes(day, n, color = type, group = type)) +
+  geom_line(alpha = .7) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~type, scales = "free_y") +
+  labs(title = "Seattle Report by Timeline and Type", x = "Day", y = "crime") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45))
+```
+```{r, include=FALSE}
+rm(by_week_type, by_day_week, by_day_type, by_date)
+```
+
+```{r, fig.width = 10}
+#month/year
+crime_by_month <- crime_sorted %>% 
+  filter(year %in% 2012:2024) %>%
+      count(month) %>%
+  mutate(source = "Crime Reports")
+  
+calls_by_month <- calls_sorted %>%
+   filter(year %in% 2012:2024) %>%
+  count(month = month) %>%
+  mutate(source = "Calls for Service")
+
+by_month_combine <- bind_rows(crime_by_month, calls_by_month)
+      
+ggplot(by_month_combine, aes(month, n, color = source)) +
+  geom_line()  +
+  labs(title = "Seattle Report by Month", x = "Month", y = "Calls") +
+    theme_minimal ()
+
+```
+
+
+```{r, fig.width = 10, warning=FALSE}
+#month/year type
+
+crime_sorted_yr <- crime_sorted %>% filter(year %in% 2012:2024)
+
+crime_by_month_type <- bind_rows(
+  crime_sorted_yr%>% filter(crime_robbery == 1) %>% count(month = month) %>% mutate(type = "Robbery"),
+  crime_sorted_yr%>% filter(crime_aggravated_assault == 1) %>% count(month = month) %>% mutate(type = "Aggravated Assault"),
+  crime_sorted_yr%>% filter(crime_burglary == 1) %>% count(month = month) %>% mutate(type = "Burglary"),
+  crime_sorted_yr%>% filter(crime_theft == 1) %>% count(month = month) %>% mutate(type = "Theft"), 
+  crime_sorted_yr%>% filter(crime_mv_theft == 1) %>% count(month = month) %>% mutate(type = "MV Theft"),
+  crime_sorted_yr%>% filter(crime_disorder == 1) %>% count(month = month) %>% mutate(type = "Disorder"),
+  crime_sorted_yr%>% filter(crime_gun == 1) %>% count(month = month) %>% mutate(type = "Gunshots"),
+  crime_sorted_yr%>% filter(crime_violent == 1) %>% count(month = month) %>% mutate(type = "Violent Crime"),
+  crime_sorted_yr%>% filter(crime_property == 1) %>% count(month = month) %>% mutate(type = "Property Crime")
+) %>%
+  mutate(source = "Crime Reports")
+
+
+calls_sorted_yr <- calls_sorted %>% filter(year %in% 2012:2024)
+
+calls_by_month_type <- bind_rows(
+  calls_sorted_yr %>% filter(calls_robbery == 1) %>% count(month = month) %>% mutate(type = "Robbery"),
+  calls_sorted_yr %>% filter(calls_aggravated_assault == 1) %>% count(month = month) %>% mutate(type = "Aggravated Assault"),
+  calls_sorted_yr %>% filter(calls_burglary == 1) %>% count(month = month) %>% mutate(type = "Burglary"),
+  calls_sorted_yr %>% filter(calls_theft == 1) %>% count(month = month) %>% mutate(type = "Theft"),
+  calls_sorted_yr %>% filter(calls_mv_theft == 1) %>% count(month = month) %>% mutate(type = "MV Theft"),
+  calls_sorted_yr %>% filter(calls_disorder == 1) %>% count(month = month) %>% mutate(type = "Disorder"),
+  calls_sorted_yr %>% filter(calls_gun == 1) %>% count(month = month) %>% mutate(type = "Gunshots"),
+  calls_sorted_yr %>% filter(calls_violent == 1) %>% count(month = month) %>% mutate(type = "Violent Crime"),
+  calls_sorted_yr %>% filter(calls_property == 1) %>% count(month = month) %>% mutate(type = "Property Crime")
+) %>%
+  mutate(source = "Calls for Service")
+
+by_month_type_combined <- bind_rows(crime_by_month_type, calls_by_month_type)
+
+
+ggplot(by_month_type_combined, aes(month, n, color = source)) +
+  geom_line(alpha = .5) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~type, scales = "free_y") +
+  labs(title = "Seattle Reported by Month and Type", x = "Month", y = "Calls*") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
+```{r, fig.width = 10, warning=FALSE}
+heatmap_by_type <- crime_sorted %>% 
+  filter(year %in% 2012:2024, !is.na(hour), !is.na(day_of_week)) %>%
+  {
+    df <- .
+    bind_rows(
+      df %>% filter(crime_robbery == 1) %>% count(day_of_week, hour) %>% mutate(type = "Robbery"),
+      df %>% filter(crime_aggravated_assault == 1) %>% count(day_of_week, hour) %>% mutate(type = "Aggravated Assault"),
+      df %>% filter(crime_burglary == 1) %>% count(day_of_week, hour) %>% mutate(type = "Burglary"),
+      df %>% filter(crime_theft == 1) %>% count(day_of_week, hour) %>% mutate(type = "Theft"),
+      df %>% filter(crime_mv_theft == 1) %>% count(day_of_week, hour) %>% mutate(type = "MV Theft"),
+      df %>% filter(crime_disorder == 1) %>% count(day_of_week, hour) %>% mutate(type = "Disorder"),
+      df %>% filter(crime_gun == 1) %>% count(day_of_week, hour) %>% mutate(type = "Gunshots")
+    )
+  } %>%
+  filter(!is.na(type))
+
+heatmap_by_type_percent <- heatmap_by_type %>%
+  group_by(type) %>%
+  mutate(percent = (n / sum(n)) * 100) %>%
+  ungroup()
+
+ggplot(heatmap_by_type_percent, aes(hour, day_of_week, fill = percent)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free") +
+  theme_minimal() +
+  labs(title = "Seattle Reported Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week",
+       fill = "% of Types Total")
+```
+
+```{r, fig.width = 10}
+#Information needed 
+
+df_dates <- expand.grid(year = 2012:2024, month = 1:12, day = 1:31) %>% 
+
+  filter(complete.cases(ymd(paste(year, month, day)))) %>% 
+
+  mutate(date = ymd(paste(year, month, day, sep = "-"))) %>% 
+
+  arrange(date) 
+
+#Get suntime data 
+
+
+
+df_sun <- df_dates %>% 
+
+  mutate(lat =  47.6062,  
+
+         lon = -122.3321) %>% 
+
+  getSunlightTimes(data = ., tz = "America/Los_Angeles", keep = c("dawn", "sunrise", "sunset", "dusk", "night")) %>% 
+
+  rename_all(tolower) %>%
+  mutate(
+    dawn = hour(dawn) + minute(dawn) / 60,
+    sunrise = hour(sunrise) + minute(sunrise) / 60,
+    sunset = hour(sunset) + minute(sunset) / 60,
+    dusk = hour(dusk) + minute(dusk) / 60,
+    night = hour(night) + minute(night) / 60
+  )
+
+
+df_sun %>%
+  filter(year(date) == 2023) %>%
+  ggplot() +
+    geom_area(aes(x = date, y = dusk), fill = "skyblue3") +  
+    geom_area(aes(x = date, y = sunset), fill = "khaki1") +  
+    geom_area(aes(x = date, y = sunrise), fill = "skyblue3") +  
+    geom_area(aes(x = date, y = dawn), fill = "grey90") +  
+      scale_y_continuous(breaks = seq(0, 23, 2), expand = c(0, 0)) +  
+      scale_x_date(date_labels =  "%b", date_breaks = "1 month", expand = c(0,0)) + 
+      coord_cartesian(ylim = c(0, 23)) +  
+      labs(x = "Month of 2023", y = "Time of the day") +  
+      theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14), 
+        panel.background = element_rect(fill = "grey90"),   
+        panel.grid = element_blank(),  
+        panel.border = element_blank(),   
+        rect = element_blank(),  
+        axis.line = element_blank()
+        )  
+
+```
+
+
+```{r, fig.width = 10}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+
+crime_night <- crime_sorted %>%
+  left_join(df_sun, by = "date") %>%
+  filter(hour >= sunset & hour < night)
+
+crime_sorted_night <- crime_night %>%
+  group_by(date) %>%
+  summarise(
+    across(starts_with("crime_"), \(x) sum(x, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+dst_rd_spring <- crime_sorted_night %>%
+  mutate( 
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_spring = as.integer(date - dst_spring)) %>%
+  filter(days_until_spring %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_spring >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_spring, dst_on) %>%
+  summarise(
+    across(starts_with("crime_"), \(x) mean(x, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+vnames <- dst_rd_spring %>% select(starts_with("crime_")) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_spring, 2)")) 
+  sub_no  <- dst_rd_spring %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_spring %>% filter(dst_on == "yes")
+
+  if(length(unique(sub_no$days_until_spring)) < 3 | length(unique(sub_yes$days_until_spring)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_spring_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("crime_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_spring_plot, aes(x = days_until_spring, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("Seattle Reported RD:", clean_title), 
+         x = "Days until Spring DST starts", 
+         y = ylabel)
+print(p)
+}
+
+
+```
+
+
+
+```{r, fig.width = 10}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+
+crime_night <- crime_sorted %>%
+  left_join(df_sun, by = "date") %>%
+  filter(hour >= sunset & hour < night)
+
+crime_sorted_night <- crime_night %>%
+  group_by(date) %>%
+  summarise(
+    across(starts_with("crime_"), \(x) sum(x, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+dst_rd_fall <- crime_sorted_night %>%
+  mutate( 
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_fall = as.integer(date - dst_fall)) %>%
+  filter(days_until_fall %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_fall >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_fall, dst_on) %>%
+  summarise(
+    across(starts_with("crime_"), \(x) mean(x, na.rm = TRUE))
+  ) %>%
+  ungroup()
+
+vnames <- dst_rd_fall %>% select(starts_with("crime_")) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_fall, 2)")) 
+  sub_no  <- dst_rd_fall %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_fall %>% filter(dst_on == "yes")
+
+  if(length(unique(sub_no$days_until_fall)) < 3 | length(unique(sub_yes$days_until_fall)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_fall_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("crime_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_fall_plot, aes(x = days_until_fall, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("Seattle Reported RD:", clean_title), 
+         x = "Days until Fall DST starts", 
+         y = ylabel)
+print(p)
+}
+
+
+```

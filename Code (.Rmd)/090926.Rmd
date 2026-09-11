@@ -1,0 +1,247 @@
+---
+title: "090926"
+output: 
+  html_notebook:
+    code_folding: hide
+  
+date: "2026-09-09"
+---
+
+
+```{r, include=FALSE}
+#install.packages("worldmet")
+#install.packages("rdrobust") 
+#install.packages("fixest")
+library(rdrobust)
+library(mosaic)
+library(data.table)
+library(lubridate)
+library(suncalc)
+library(arrow)
+library(dplyr)
+library(lutz)
+library(fixest)
+library(ggplot2)
+library(tidyverse)
+library(worldmet)
+```
+
+```{r, include=FALSE}
+
+
+vcities <- c("Austin", "Hartford", "New Orleans", "Seattle", "San Francisco")
+vstations <- c("722540-13904", "725087-14752", "722310-12916", "727930-24233", "724940-23234")
+
+weatherlist <- list()
+counter <- 1
+
+for(X in 1:length(vstations)){
+  for(Z in 2012:2024){
+    weatherlist[[counter]] <- importNOAA(code = vstations[X], year = Z) %>% 
+      mutate(city = vcities[X])
+    counter <- counter + 1
+  }
+}
+
+rm(X, Z, counter, vcities, vstations)
+
+```
+
+```{r, include=FALSE}
+#Data processing at the day-year-city level
+#temperature (Celsius), precipitation (daily mm), humidity (percentages), visibility (meters)
+dfweather <- bind_rows(weatherlist) %>%
+  mutate(date = as.Date(date),
+         year = year(date),
+         month = month(date),
+         day = day(date)) %>%
+  rename(temperature = air_temp,
+         precipitation = precip_6 ,
+         humidity = RH,
+         visibility = visibility) %>%
+  select(city, date, year, month, day, temperature, precipitation, humidity, visibility) %>%
+  group_by(city, date, year, month, day) %>%
+  mutate_at(vars(temperature:visibility), as.numeric) %>%
+  #mutate(temperature = (temperature - 32)/1.8) %>%
+  summarise(temperature = mean(temperature, na.rm = TRUE), 
+            precipitation = sum(precipitation, na.rm = TRUE),
+            humidity = mean(humidity, na.rm = TRUE),
+            visibility = mean(visibility, na.rm = TRUE)) %>%
+  mutate_at(vars(temperature:visibility), function(x) round(x, digits = 2))
+
+
+
+#fwrite(dfweather, "../Data/Weather day-year-city data 2012-2024.csv")
+#dfweather <- fread("../Data/Weather day-year-city data 2012-2024.csv")
+#rm(dfweather, weatherlist)
+
+```
+
+
+```{r, include=FALSE}
+#steps above but filter for sunset/sunrise
+dfweather <- bind_rows(weatherlist) %>%
+  mutate(hour  = hour(date),      
+         date  = as.Date(date),
+         year  = year(date),
+         month = month(date),
+         day   = day(date)) %>%
+ filter(complete.cases(date)) %>%
+  mutate(sunrise = ifelse(hour %in% 6:7, 1, 0),
+         sunset = ifelse(hour %in% 18:19, 1, 0)) %>%
+  rename(temperature = air_temp,
+         precipitation = precip_6 ,
+         humidity = RH,
+         visibility = visibility) %>%
+  select(city, date, year, month, day, hour, sunrise, sunset, temperature, precipitation, humidity, visibility) %>%
+  mutate_at(vars(temperature:visibility), as.numeric)
+
+
+dfsunrise <- dfweather %>%
+  filter(sunrise == 1) %>%
+  group_by(city, year, month, day) %>%
+  summarise(temperature_sunrise = mean(temperature, na.rm = TRUE), 
+            precipitation_sunrise = sum(precipitation, na.rm = TRUE),
+            humidity_sunrise = mean(humidity, na.rm = TRUE),
+            visibility_sunrise = mean(visibility, na.rm = TRUE)) %>%
+  mutate_at(vars(temperature_sunrise:visibility_sunrise), function(x) round(x, digits = 2)) %>%
+  as.data.frame()
+
+#sunset
+dfsunset <- dfweather %>%
+  filter(sunset == 1) %>%
+  group_by(city, year, month, day) %>%
+  summarise(temperature_sunset = mean(temperature, na.rm = TRUE), 
+            precipitation_sunset = sum(precipitation, na.rm = TRUE),
+            humidity_sunset = mean(humidity, na.rm = TRUE),
+            visibility_sunset = mean(visibility, na.rm = TRUE)) %>%
+  mutate_at(vars(temperature_sunset:visibility_sunset), function(x) round(x, digits = 2)) %>%
+  as.data.frame()
+
+
+#Merge all data
+dfweather <- dfsunrise %>%
+  left_join(dfsunset, by = c("city", "year", "month", "day"))
+
+#export data
+fwrite(dfweather, "Data/processed/hour-year-city_data_2012-2024.csv")
+dfweather <- fread("Data/processed/hour-year-city_data_2012-2024.csv")
+
+rm(dfweather, dfsunrise, dfsunset, weatherlist)
+
+```
+
+```{r, include=FALSE}
+dfcalls_all <- fread("Data/mega/dfcalls_all.csv", check.names = TRUE) %>% rename_all(tolower)
+```
+
+
+
+```{r, include=FALSE}
+
+
+dfcalls_all <- dfcalls_all %>%
+  filter(total_calls > 0) %>%
+filter(days_until_spring_dst %in% -21:21) %>%
+  mutate(
+    year = year, #reduntant but keeps the variables for me
+    month = month,
+    day_of_week = lubridate::wday(date, label = FALSE),
+    DST = ifelse(days_until_spring_dst >= 0, 1, 0),
+    DST_x_days = DST * days_until_spring_dst)
+  
+```
+
+```{r}
+# Beta * DST = DST
+# Alpha(1) * days = days_until_spring_dst
+# Alpha(2) * days = DST_x_days 
+# Alpha(i) = as.factor(city)
+#DOW = as.factor(day_of_week)
+#Month = as.factor(month)
+#Year = as.factor(year)
+
+regression_calls <- lm(
+  total_calls ~ DST + days_until_spring_dst + DST_x_days + as.factor(city) + as.factor(day_of_week) + as.factor(month) + as.factor(year), 
+  dfcalls_all
+)
+
+summary(regression_calls)
+```
+
+```{r}
+# Beta * DST = DST
+# Alpha(1) * days = days_until_spring_dst
+# Alpha(2) * days = DST_x_days 
+# Alpha(i) = as.factor(city)
+#DOW = as.factor(day_of_week)
+#Month = as.factor(month)
+#Year = as.factor(year)
+
+regression_sunset_calls <- lm(
+  calls_sunset ~ DST + days_until_spring_dst + DST_x_days + as.factor(city) + as.factor(day_of_week) + as.factor(month) + as.factor(year), 
+  dfcalls_all
+)
+
+summary(regression_sunset_calls)
+```
+
+```{r}
+# Beta * DST = DST
+# Alpha(1) * days = days_until_spring_dst
+# Alpha(2) * days = DST_x_days 
+# Alpha(i) = as.factor(city)
+#DOW = as.factor(day_of_week)
+#Month = as.factor(month)
+#Year = as.factor(year)
+
+regression_sunset_calls_index <- lm(
+  calls_index_is_sunset ~ DST + days_until_spring_dst + DST_x_days + as.factor(city) + as.factor(day_of_week) + as.factor(month) + as.factor(year), 
+  dfcalls_all
+)
+
+summary(regression_sunset_calls_index)
+```
+
+```{r}
+# Beta * DST = DST
+# Alpha(1) * days = days_until_spring_dst
+# Alpha(2) * days = DST_x_days 
+# Alpha(i) = as.factor(city)
+#DOW = as.factor(day_of_week)
+#Month = as.factor(month)
+#Year = as.factor(year)
+
+regression_sunset_calls_property <- lm(
+  calls_property_is_sunset ~ DST + days_until_spring_dst + DST_x_days + as.factor(city) + as.factor(day_of_week) + as.factor(month) + as.factor(year), 
+  dfcalls_all
+)
+
+summary(regression_sunset_calls_property)
+```
+
+```{r}
+# Beta * DST = DST
+# Alpha(1) * days = days_until_spring_dst
+# Alpha(2) * days = DST_x_days 
+# Alpha(i) = as.factor(city)
+#DOW = as.factor(day_of_week)
+#Month = as.factor(month)
+#Year = as.factor(year)
+
+regression_sunset_calls_violent <- lm(
+  calls_violent_is_sunset ~ DST + days_until_spring_dst + DST_x_days + as.factor(city) + as.factor(day_of_week) + as.factor(month) + as.factor(year), 
+  dfcalls_all
+)
+
+summary(regression_sunset_calls_violent)
+```
+
+
+
+
+
+
+
+
+

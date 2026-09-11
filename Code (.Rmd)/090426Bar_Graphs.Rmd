@@ -1,0 +1,1014 @@
+---
+title: "090426BarGraph"
+output: 
+  html_notebook:
+    code_folding: hide
+  
+date: "2026-04-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("suncalc")
+#install.packages("lutz")
+#install.packages("R.utils")
+library(mosaic)
+library(data.table)
+library(lubridate)
+library(suncalc)
+library(scales)
+library(stringr)
+library(arrow)
+library(kableExtra)
+library(ggplot2)
+library(tidyverse)
+```
+
+
+```{r, include = FALSE}
+#austin
+dfcalls_austin <- fread("Data/raw/Austin/APD_Computer_Aided_Dispatch_Incidents.csv", check.names = TRUE,
+    select = c("Call Disposition Description", "Priority Level", "Final Problem Description",  "Response Datetime", "Incident Type")) %>% rename_all(tolower)%>%
+mutate(
+  date_time = mdy_hms(response.datetime),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+    disposition = case_when(
+        call.disposition.description %in% c("No Report", "Report Written", "Unable To Locate", "False Alarm", "Supplement Written", "Non-Police Matter", "Report Written MH", "Reassigned call", "District Representatives", "No Report MH") ~ call.disposition.description,
+      TRUE ~ NA_character_),
+    calls_disposition_handled = as.integer(call.disposition.description %in% c("Report Written", "Supplement Written", "Report Written MH", "District Representatives")), 
+    calls_disposition_no_action = as.integer(call.disposition.description %in% c("No Report", "False Alarm", "Reassigned call", "No Report MH")),
+    calls_disposition_unable_to_locate = as.integer(call.disposition.description == "Unable To Locate"), 
+  
+    priority = priority.level,
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    
+         calls_disorder = as.integer(final.problem.description %in% c(
+      "Disturbance Other", "Family Disturbance", "Disturbance Hs", "Disturbance Urgent",
+      "Disturbance Service", "Disturbance/Othr", "Disturbance Vehicle Urgent",
+      "Mischief / Vandalism", "Criminal Mischief", "Crim Mischief",
+      "Drugs", "Poss Marijuana", "Poss Controlled Sub/Narcotic", "Poss Drg Paraphernalia",
+      "Prostitution"
+    )),
+
+    calls_behavior = as.integer(final.problem.description %in% c(
+      "Suspicious Person", "Suspicious Vehicle", "Suspicious Unknown", "Prowler Hs",
+      "Trespass Urgent", "Criminal Trespass", "Criminal Trespass Notice", "Crim Trespass"
+    )),
+
+    calls_traffic = as.integer(final.problem.description %in% c(
+      "Crash Urgent", "Crash Service", "Crash Hs", "Crash Leaving The Scene",
+      "Crash Cr3", "Blue Form Collision", "Crash Blue Form", "Collision",
+      "Crash With City Vehicle", "Crash Private Property"
+    )),
+
+    calls_gun = as.integer(final.problem.description %in% c(
+      "Shots Fired", "Gun Hs", "Gun Urgent", "Gun Other", "Shoot/Stab Hs",
+      "Ucw"
+    )),
+
+    calls_robbery = as.integer(final.problem.description %in% c(
+      "Robbery By Assault", "Robbery Service", "Robbery Urgent", "Agg Robbery/Deadly Weapon"
+    )),
+
+
+    calls_aggravated_assault = as.integer(final.problem.description %in% c(
+      "Assault With Injury", "Agg Assault", "Assault W/Injury-Fam/Date Vio",
+      "Assault By Contact", "Agg Assault Fam/Date Viol", "Agg Aslt Strangle/Suffocate"
+    )),
+
+    calls_burglary = as.integer(final.problem.description %in% c(
+      "Burglary Res Service", "Burglary Non Res Service", "Burglary Of Vehicle",
+      "Burglary Of Residence", "Burglary Vehicle", "Burglary Hs", "Burglary Urgent",
+      "Burglary/Non-Residence", "Burglary Non Residence"
+    )),
+
+    calls_theft = as.integer(final.problem.description %in% c(
+      "Theft", "Shoplifting", "Theft From Person", "Theft Of Service"
+    )),
+
+    calls_mv_theft = as.integer(final.problem.description %in% c(
+      "Auto Theft Service", "Auto Theft Recovery", "Auto Theft", "Unauthorized Use Of Veh"
+    )),
+  
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                incident.type == "Officer-Initiated Incident" ~ "Officer",
+                incident.type == "Dispatched Incident" ~ "Citizen",
+                TRUE ~ NA_character_
+              )
+  
+    ) %>%
+  select(-c(response.datetime, call.disposition.description, priority.level, incident.type, priority, date_time))
+  
+```
+
+
+```{r}
+#create variables
+
+    disorder_desc = c("Disturbance Other", "Family Disturbance", "Disturbance Hs", "Disturbance Urgent",
+      "Disturbance Service", "Disturbance/Othr", "Disturbance Vehicle Urgent",
+      "Mischief / Vandalism", "Criminal Mischief", "Crim Mischief",
+      "Drugs", "Poss Marijuana", "Poss Controlled Sub/Narcotic", "Poss Drg Paraphernalia",
+      "Prostitution")
+
+    behavior_desc = c("Suspicious Person", "Suspicious Vehicle", "Suspicious Unknown", "Prowler Hs",
+      "Trespass Urgent", "Criminal Trespass", "Criminal Trespass Notice", "Crim Trespass")
+
+    gun_desc = c("Shots Fired", "Gun Hs", "Gun Urgent", "Gun Other", "Shoot/Stab Hs",
+      "Ucw")
+  
+dfcalls_austin <- dfcalls_austin %>%
+  mutate(
+    disorder_flag = as.integer(final.problem.description %in% disorder_desc),
+    behavior_flag = as.integer(final.problem.description %in% behavior_desc),
+    gun_flag      = as.integer(final.problem.description %in% gun_desc)
+  )
+
+#map category 
+category_map <-bind_rows(
+  tibble(final.problem.description = disorder_desc, category = "Disorder"),
+  tibble(final.problem.description = behavior_desc, category = "Behavior"),
+  tibble(final.problem.description = gun_desc, category = "Gun")
+)
+
+
+composition_austin <- dfcalls_austin %>%
+  filter(final.problem.description %in% category_map$final.problem.description) %>%
+  inner_join(category_map, by = "final.problem.description") %>%
+  count(category, final.problem.description, name = "n") %>%
+  group_by(category) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup() %>%
+  # order categories, and order descriptions within each stack by share (desc)
+  mutate(
+    category = factor(category, levels = c("Disorder", "Behavior", "Gun")),
+    final.problem.description = str_to_title(final.problem.description)
+  ) %>%
+  arrange(category, desc(share)) %>%
+  mutate(final.problem.description = factor(final.problem.description, levels = unique(final.problem.description)))
+```
+
+```{r, fig.width = 10 }
+p <- ggplot(composition_austin, aes(x = category, y = share, fill = final.problem.description)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = ifelse(share >= 0.04,
+                        paste0(final.problem.description, "\n", percent(share, accuracy = 1)),
+                        "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8, color = "black", lineheight = 0.85
+  ) +
+  facet_wrap(~ category, scales = "free_x") +
+  scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
+  labs(
+    title = "Austin Composition of Disorder, Behavior, and Gun Calls",
+    subtitle =  "2012–2024",
+    x = NULL,
+    y = "% of category"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.x = element_blank()
+  )
+
+print(p)
+
+
+```
+
+```{r, fig.width = 10}
+composition_austin %>%
+  arrange(category, desc(share)) %>%
+  group_by(category) %>%
+  mutate(category_display = ifelse(row_number() == 1, as.character(category), "")) %>%
+  ungroup() %>%
+  transmute(
+    Category = category_display,
+    `Call Description` = final.problem.description,
+    Count = n,
+    `% of Category` = percent(share, accuracy = 0.1)
+  ) %>%
+  knitr::kable(align = c("l", "l", "r", "r")) %>%
+  kable_minimal()
+```
+
+
+
+```{r, include = FALSE}
+#Hartford 
+
+vfiles <- list.files("Data/raw/Hartford/crimes", pattern = "\\.csv$", full.names = TRUE)
+
+getwd()
+# Empty list 
+
+dfcalls_list <- vector("list", length(vfiles)) 
+
+# Reads each file and appends it to a list 
+
+for(X in seq_along(vfiles)){
+
+  dftemp <- fread(vfiles[X], check.names = TRUE) %>% 
+   rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v")) 
+
+ if("date1" %in% names(dftemp)){
+  dftemp <- dftemp %>% 
+    rename(date = date1)
+}
+
+if(grepl("Weekly", vfiles[X])){ 
+  dftemp <- dftemp %>% 
+    rename(dateend = date) 
+}
+  dfcalls_list[[X]] <- dftemp 
+} 
+
+
+rm(dftemp, X, vfiles); gc() 
+
+#Bind all the elements of the list into a single data frame. 
+
+dfcalls_hartford <- bind_rows(
+  lapply(dfcalls_list, function(x) {
+    if ("date1" %in% names(x)) {
+      x <- x %>% rename(date = date1)
+    }
+    x
+  })
+) %>%
+  select(c("date", "time_24hr", "time", "description_1", "description_2",
+           "description1", "description", "priority", "call_initiated_by")) %>%
+mutate(
+  time = coalesce(
+  as.character(time_24hr),
+  as.character(time)
+) %>%
+  str_pad(width = 4, side = "left", pad = "0") %>%
+  sub("^(\\d{2})(\\d{2})$", "\\1:\\2:00", .),
+
+datetime = lubridate::ymd_hms(
+  paste(as.Date(date), time)
+),
+    
+    date = as.Date(datetime),
+    year = year(datetime),
+     month    = lubridate::month(datetime),  
+    day  = lubridate::day(datetime),
+    day_of_week = lubridate::wday(datetime, week_start = 1),
+    hour = hour(datetime), 
+    minute = minute(datetime),
+      
+   #no disposition
+   priority = case_when(
+      priority == "A" ~ "Priority 1",
+      priority == "B" ~ "Priority 2",
+      priority == "C" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    
+    description_final = coalesce(description_1, description_2, description1, description),
+description_clean = str_trim(str_remove(description_final, "\\s*-\\s*(ACTIVE|INACTIVE)$")),
+
+calls_disorder = as.integer(description_clean %in% c("BREACH OF PEACE", "NOISE COMPLAINT", "PROPERTY DAMAGE", "VICE OFFENSE (SPECIFY)", "THREATENING/HARASSMENT", "INTOXICATED PERSON", "GROUP DISTURBING")),
+calls_behavior = as.integer(description_clean %in% c("SUSPICIOUS PERSON", "SUSPICIOUS VEHICLE", "LOITERING", "TRESPASSING")),
+calls_traffic = as.integer(description_clean %in% c("ACCIDENT (MOTOR VEHICLE)", "ACCIDENT (M/V W/ INJURY)", "ACCIDENT M/V", "ACCIDENT M/V W/ INJURY")),
+calls_gun = as.integer(description_clean %in% c("SHOTS FIRED", "GUN INVOLVED")),
+calls_robbery = as.integer(description_clean %in% c("MUGGING/STREET ROBBERY", "PURSE SNATCH")),
+calls_burglary = as.integer(description_clean %in% c("BREAKING AND ENTERING", "BURGLARY")),
+
+calls_aggravated_assault = as.integer(description_clean %in% c("ASSAULT--SERIOUS", "ASSAULT - SERIOUS", "ASSAULT - SERIOUS W/ GUN", "ASSAULT  - W/ OTHER WEAPON")),
+calls_theft = as.integer(description_clean == "LARCENY"),
+calls_mv_theft = as.integer(description_clean == "STOLEN VEHICLE"),
+    
+    calls_violent = calls_robbery + calls_aggravated_assault,
+    calls_property = calls_burglary + calls_theft + calls_mv_theft,
+    calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+      call_initiated_by == "OFFICER" ~ "Officer",
+      call_initiated_by %in% c("CITIZEN", "E911 CALL") ~ "Citizen",
+      call_initiated_by == "" ~ "Not Available",
+      TRUE ~ NA_character_)
+  
+    ) %>% 
+  filter(year %in% 2012:2024) %>%
+   select(-c(time_24hr, priority, call_initiated_by, description_1, description_2, description1, description, description_final))
+ 
+  
+
+```
+
+
+```{r}
+#create variables
+
+    disorder_desc = c("BREACH OF PEACE", "NOISE COMPLAINT", "PROPERTY DAMAGE", "VICE OFFENSE (SPECIFY)", "THREATENING/HARASSMENT", "INTOXICATED PERSON", "GROUP DISTURBING")
+
+    behavior_desc = c("SUSPICIOUS PERSON", "SUSPICIOUS VEHICLE", "LOITERING", "TRESPASSING")
+
+    gun_desc = c("SHOTS FIRED", "GUN INVOLVED")
+  
+dfcalls_hartford <- dfcalls_hartford %>%
+  mutate(
+    disorder_flag = as.integer(description_clean %in% disorder_desc),
+    behavior_flag = as.integer(description_clean %in% behavior_desc),
+    gun_flag      = as.integer(description_clean %in% gun_desc)
+  )
+
+#map category 
+category_map <-bind_rows(
+  tibble(description_clean = disorder_desc, category = "Disorder"),
+  tibble(description_clean = behavior_desc, category = "Behavior"),
+  tibble(description_clean = gun_desc, category = "Gun")
+)
+
+
+composition_hartford <- dfcalls_hartford %>%
+  filter(description_clean %in% category_map$description_clean) %>%
+  inner_join(category_map, by = "description_clean") %>%
+  count(category, description_clean, name = "n") %>%
+  group_by(category) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup() %>%
+  # order categories, and order descriptions within each stack by share (desc)
+  mutate(
+    category = factor(category, levels = c("Disorder", "Behavior", "Gun")),
+    description_clean = str_to_title(description_clean)
+  ) %>%
+  arrange(category, desc(share)) %>%
+  mutate(description_clean = factor(description_clean, levels = unique(description_clean)))
+```
+
+```{r, fig.width = 10 }
+p <- ggplot(composition_hartford, aes(x = category, y = share, fill = description_clean)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = ifelse(share >= 0.04,
+                        paste0(description_clean, "\n", percent(share, accuracy = 1)),
+                        "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8, color = "black", lineheight = 0.85
+  ) +
+  facet_wrap(~ category, scales = "free_x") +
+  scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
+  labs(
+    title = "Hartford Composition of Disorder, Behavior, and Gun Calls",
+    subtitle =  "2012–2024",
+    x = NULL,
+    y = "% of category"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.x = element_blank()
+  )
+
+print(p)
+
+
+```
+
+```{r, fig.width = 10}
+composition_hartford %>%
+  arrange(category, desc(share)) %>%
+  group_by(category) %>%
+  mutate(category_display = ifelse(row_number() == 1, as.character(category), "")) %>%
+  ungroup() %>%
+  transmute(
+    Category = category_display,
+    `Call Description` = description_clean,
+    Count = n,
+    `% of Category` = percent(share, accuracy = 0.1)
+  ) %>%
+  knitr::kable(align = c("l", "l", "r", "r")) %>%
+  kable_minimal()
+```
+
+
+```{r, include = FALSE}
+#New Orleans
+
+vfiles <- list.files("Data/raw/New Orleans/OneDrive_2_7-22-2026", full.names = TRUE) 
+
+getwd()
+# Empty list 
+
+dfcalls_list <- vector("list", length(vfiles)) 
+
+# Reads each file and appends it to a list (which is efficient) 
+
+for(X in seq_along(vfiles)){
+
+  dftemp <- fread(vfiles[X], check.names = TRUE) %>% 
+   rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v")) 
+  
+  if(grepl("Weekly", vfiles[X])){ 
+    dftemp <- dftemp %>% 
+      rename(dateend = date) 
+  } 
+  dfcalls_list[[X]] <- dftemp 
+} 
+
+
+rm(dftemp, X, vfiles); gc() 
+
+
+
+ dfcalls_new_orleans <- bind_rows(dfcalls_list) %>%
+    select(c("typetext", "priority", "initialpriority", "timearrive", "dispositiontext", "selfinitiated")) %>%
+mutate(
+  date_time = mdy_hms(timearrive),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+  
+  disposition = case_when(
+        dispositiontext %in% c("Necessary Action Taken" , "REPORT TO FOLLOW", "NECESSARY ACTION TAKEN", "GONE ON ARRIVAL","VOID", "UNFOUNDED", "REFERRED TO EXTERNAL AGENCY", "Canceled By Complainant") ~ dispositiontext,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+    disposition_clean_combined = case_match(
+      disposition_clean,
+      c("GONE ON ARRIVAL", "UNFOUNDED") ~ "GONE ON ARRIVAL / UNFOUNDED",
+      .default = disposition_clean
+      ),
+   calls_disposition_handled = as.integer(disposition_clean %in% c("Necessary Action Taken", "REPORT TO FOLLOW", "REFERRED TO EXTERNAL AGENCY")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("VOID", "Canceled By Complainant")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean == "GONE ON ARRIVAL", "UNFOUNDED"), 
+  
+    priority = parse_number(priority),
+    initial_priority = parse_number(initialpriority),
+    priority = case_when(
+      priority == "3" ~ "Priority 1",
+      priority == "2" ~ "Priority 2",
+      priority == "1" ~ "Priority 3",
+        is.na(priority) & initial_priority == "3" ~ "Priority 1",
+        is.na(priority) & initial_priority == "2" ~ "Priority 2",
+        is.na(priority) & initial_priority == "1" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    typetext_clean = str_trim(toupper(typetext)),
+    calls_disorder = as.integer(typetext_clean %in% c("DRUNK", "INDECENT BEHAVIOR", "DRUG ACTIVITY", "OBSCENITY, EXPOSING", "HOMELESS", "DISORDERLY CONDUCT", "DRUG VIOLATIONS", "FIGHT", "DOMESTIC DISTURBANCE", "DISTURBANCE (OTHER)")),
+    calls_behavior = as.integer(typetext_clean %in% c("SUSPICIOUS VEHICLE", "TRESPASSING", "PROWLER", "SUSPICIOUS PERSON")),
+    calls_traffic = as.integer(typetext_clean  %in% c("AUTO ACCIDENT CITY VEHICLE", "ACCIDENT W/INJ - HIT & RUN (PD)", "HIT & RUN WITH INJURIES", "AUTO ACCIDENT WITH I", "ACCIDENT - HIT & RUN", "ACCIDENT - PROPERTY DAMAGE", "AUTO ACCIDENT WITH INJURY", "HIT & RUN", "AUTO ACCIDENT")),
+    calls_gun = as.integer(typetext_clean %in% c("SHOTS FIRED", "DISCHARGING FIREARM" )),
+         
+        calls_robbery = as.integer(typetext_clean  %in% c("ARMED ROBBERY", "SIMPLE ROBBERY, PROPERTY SNATCHING", "SIMPLE ROBBERY", "ARMED ROBBERY WITH GUN")),
+        calls_aggravated_assault = as.integer(typetext_clean  %in% c("AGGRAVATED BATTERY DOMESTIC", "ASSAULT W/WEAPON (PD)", "AGGRAVATED BATTERY B", "AGGRAVATED ASSAULT DOMESTIC", "AGGRAVATED BATTERY", "AGGRAVATED BATTERY BY SHOOTING", "AGGRAVATED ASSAULT")),
+        calls_burglary = as.integer(typetext_clean  %in% c("AGGRAVATED BURGLARY", "COMMERCIAL BURGLARY", "RESIDENTAL BURGLARY (NOT OCCUPIED AT TIME OF INCIDENT)", "SIMPLE BURGLARY", "RESIDENCE BURGLARY")),
+        calls_theft = as.integer(typetext_clean  %in% c("THEFT FROM EXTERIOR", "PICKPOCKET", "THEFT FROM INTERIOR", "BICYCLE THEFT", "SHOPLIFTING", "THEFT")),
+        calls_mv_theft = as.integer(typetext_clean  %in% c("THEFT FROM EXTERIOR OF VEHICLE", "BURGLARY FROM VEHICLE", "VEHICLE STOLEN", "AUTO THEFT", "SIMPLE BURGLARY VEHICLE")),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                selfinitiated == "Y" ~ "Officer",
+                selfinitiated == "N" ~ "Citizen",
+               is.na(selfinitiated) | `selfinitiated` == "NA" ~ "N/A",
+                TRUE ~ NA_character_
+              )
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(typetext, priority, initial_priority, initialpriority, timearrive, dispositiontext, selfinitiated, date_time, disposition, disposition_clean, disposition_clean_combined))
+```
+
+
+```{r}
+#create variables
+
+    disorder_desc = c("DRUNK", "INDECENT BEHAVIOR", "DRUG ACTIVITY", "OBSCENITY, EXPOSING", "HOMELESS", "DISORDERLY CONDUCT", "DRUG VIOLATIONS", "FIGHT", "DOMESTIC DISTURBANCE", "DISTURBANCE (OTHER)")
+
+    behavior_desc = c("SUSPICIOUS VEHICLE", "TRESPASSING", "PROWLER", "SUSPICIOUS PERSON")
+
+    gun_desc = c("SHOTS FIRED", "DISCHARGING FIREARM" )
+  
+dfcalls_new_orleans <- dfcalls_new_orleans %>%
+  mutate(
+    disorder_flag = as.integer(typetext_clean %in% disorder_desc),
+    behavior_flag = as.integer(typetext_clean %in% behavior_desc),
+    gun_flag      = as.integer(typetext_clean %in% gun_desc)
+  )
+
+#map category 
+category_map <-bind_rows(
+  tibble(typetext_clean = disorder_desc, category = "Disorder"),
+  tibble(typetext_clean = behavior_desc, category = "Behavior"),
+  tibble(typetext_clean = gun_desc, category = "Gun")
+)
+
+
+composition_new_orleans <- dfcalls_new_orleans %>%
+  filter(typetext_clean %in% category_map$typetext_clean) %>%
+  inner_join(category_map, by = "typetext_clean") %>%
+  count(category, typetext_clean, name = "n") %>%
+  group_by(category) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup() %>%
+  # order categories, and order descriptions within each stack by share (desc)
+  mutate(
+    category = factor(category, levels = c("Disorder", "Behavior", "Gun")),
+    typetext_clean = str_to_title(typetext_clean)
+  ) %>%
+  arrange(category, desc(share)) %>%
+  mutate(typetext_clean = factor(typetext_clean, levels = unique(typetext_clean)))
+```
+
+```{r, fig.width = 10 }
+p <- ggplot(composition_new_orleans, aes(x = category, y = share, fill = typetext_clean)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = ifelse(share >= 0.04,
+                        paste0(typetext_clean, "\n", percent(share, accuracy = 1)),
+                        "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8, color = "black", lineheight = 0.85
+  ) +
+  facet_wrap(~ category, scales = "free_x") +
+  scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
+  labs(
+    title = "New Orleans Composition of Disorder, Behavior, and Gun Calls",
+    subtitle =  "2012–2024",
+    x = NULL,
+    y = "% of category"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.x = element_blank()
+  )
+
+print(p)
+
+
+```
+
+```{r, fig.width = 10}
+composition_new_orleans %>%
+  arrange(category, desc(share)) %>%
+  group_by(category) %>%
+  mutate(category_display = ifelse(row_number() == 1, as.character(category), "")) %>%
+  ungroup() %>%
+  transmute(
+    Category = category_display,
+    `Call Description` = typetext_clean,
+    Count = n,
+    `% of Category` = percent(share, accuracy = 0.1)
+  ) %>%
+  knitr::kable(align = c("l", "l", "r", "r")) %>%
+  kable_minimal()
+```
+
+
+
+```{r, include=FALSE}
+#Seattle
+
+columns_selected <- c(
+  "initial.call.type", "call.type.indicator", "priority", "call.type", "cad.event.arrived.time", "cad.event.clearance.description"
+)
+
+vfiles <- list.files("Data/raw/Seattle", pattern = "\\.csv$", full.names = TRUE)
+dfcalls_list <- vector("list", length(vfiles))
+
+for (X in seq_along(vfiles)) {
+  header <- names(fread(vfiles[X], nrows = 0))
+  sel_cols <- header[tolower(header) %in% columns_selected]
+
+  dftemp <- fread(vfiles[X], check.names = TRUE) %>%  
+    rename_all(tolower) %>%
+    mutate_all(as.character) %>%
+    select(any_of(columns_selected))
+
+  if (grepl("Weekly", vfiles[X])) {
+    dftemp <- dftemp %>% rename(dateend = date)
+  }
+
+  dfcalls_list[[X]] <- dftemp
+}
+
+lapply(dfcalls_list, names)
+
+rm(dftemp, X, header, sel_cols, vfiles); gc()
+
+
+ dfcalls_seattle <- bind_rows(dfcalls_list) %>%
+   
+mutate(
+  date_time = as.POSIXct(cad.event.arrived.time, format = "%Y %b %d %I:%M:%S %p"),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+    disposition = case_when(
+        cad.event.clearance.description %in% c("ASSISTANCE RENDERED" , "REPORT WRITTEN (NO ARREST)", "UNABLE TO LOCATE INCIDENT OR COMPLAINANT", "PHYSICAL ARREST MADE","NO POLICE ACTION POSSIBLE OR NECESSARY", "CITATION", "FALSE COMPLAINT/UNFOUNDED", "OTHER REPORT MADE", "FOLLOW-UP REPORT MADE", "RESPONDING UNIT(S) CANCELLED BY RADIO", "PROBLEM SOLVING PROJECT") ~ cad.event.clearance.description,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+  
+  calls_disposition_handled = as.integer(disposition_clean %in% c("ASSISTANCE RENDERED", "REPO RT WRITTEN (NO ARREST)", "PHYSICAL ARREST MADE","CITATION", "OTHER REPORT MADE", "FOLLOW-UP REPORT MADE", "PROBLEM SOLVING PROJECT")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("NO POLICE ACTION POSSIBLE OR NECESSARY", "FALSE COMPLAINT/UNFOUNDED", "RESPONDING UNIT(S) CANCELLED BY RADIO")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean == "UNABLE TO LOCATE INCIDENT OR COMPLAINANT"), 
+  
+    priority = case_when(
+      priority == "1" ~ "Priority 1",
+      priority == "2" ~ "Priority 2",
+      priority == "3" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    type_clean = str_trim(toupper(initial.call.type)),
+    calls_disorder = as.integer(type_clean %in% c("URINATING, DEFECATING IN PUBLIC", "TRU - DISTURBANCE", "LIQUOR VIOLATIONS - MINOR", "SEX IN PUBLIC PLACE (INCL MASTURBATION)", "VICE - PROSTITUTION", "PANHANDLING, AGGRESSIVE", "LEWD -  (EXPOSING, FLASHING)", "LIQUOR VIOLATIONS - ADULT", "OBS - NOISE - DISTURBANCE (PARTY, ETC)", "OBS - FIGHT - IP - PHYSICAL (NO WEAPONS)", "NARCOTICS - VIOLATIONS (LOITER, USE, SELL, NARS)", "NUISANCE", "DISTURBANCE")),
+    calls_behavior = as.integer(type_clean %in% c("ABANDONED VEHICLE", "OBS - PROWLER", "TRU - SUSPICIOUS CIRCUMSTANCES", "TRU - HARASSMENT","OBS - PROWLER - IP/JO", "OBS - FIGHT - VERBAL/ORAL (NO WEAPONS)", "DISTURBANCE - DV - NO ASLT", "TRESPASS", "SUSPICIOUS PERSON, VEHICLE, OR INCIDENT")),
+    calls_traffic = as.integer(type_clean  %in% c("TRAFFIC - ROAD RAGE", "OBS - TRU - ACC - HIT AND RUN", "OBS - MVC - UNK INJURIES", "OBS - HIT AND RUN (NO INJURIES). INCLUDES IP/JO", "OBS - ACC - WITH INJURIES (INCLUDES HIT AND RUN)", "MVC - COLLISION (ALL)", "OBS - MVC - NON INJURY, BLOCKING", "TRU - MVC - HIT AND RUN", "MVC - HIT AND RUN", "OBS - MVC - WITH INJURIES (INCLUDES HIT AND RUN)")),
+    calls_gun = as.integer(type_clean %in% c("PROPERTY - DAMAGE (GUN RELATED)", "WEAPN - GUN,DEADLY WPN (NO THRTS/ASLT/DIST)", "ASLT - PERSON SHOT OR SHOT AT", "OBS WEAPN-IP/JO-GUN,DEADLY WPN (NO THRT/ASLT/DIST)", "SHOTS HEARD - IN PROGRESS")),
+         
+        calls_robbery = as.integer(type_clean  %in% c("OBS - PURSE SNATCH - ROBBERY", "OBS - PURSE SNATCH - IP/JO - ROBBERY", "ROBBERY - CRITICAL (INCLUDES STRONG ARM)")),
+        calls_aggravated_assault = as.integer(type_clean  %in% c("FIGHT - WITH WEAPONS", "FIGHT - CRITICAL WITH WEAPONS", "ASLT - DV CRITICAL", "ASLT - CRITICAL (NO SHOOTINGS)")),
+        calls_burglary = as.integer(type_clean  %in% c("TRU - COMMERCIAL BURGLARY", "OBS - BURG - IP/JO - COMM BURG (INCLUDES SCHOOLS)", "BURG - COMM BURGLARY", "BURG - OCCUPIED RESD", "BURG - RESD (INCL UNOCC STRUCTURES ON PROP)")),
+        calls_theft = as.integer(type_clean  %in% c("TRU - SHOPLIFT", "OBS - SECONDARY - FORGERY/BUNCO/SCAMS/ID THEFT", "OBS - SECONDARY - THEFT", "TRU - THEFT", "SHOPLIFT - THEFT", "THEFT (DOES NOT INCLUDE SHOPLIFT OR SVCS)")),
+        calls_mv_theft = as.integer(type_clean  %in% c("CARJACKING - ROBBERY", "TRU - AUTO THEFT", "AUTO THEFT - VEH THEFT OR THEFT AND RECOVERY")),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                call.type.indicator == "ONVIEW" ~ "Officer",
+                call.type.indicator == "DISPATCH" ~ "Citizen",
+                TRUE ~ NA_character_
+              )
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(initial.call.type, call.type.indicator, priority, call.type, cad.event.arrived.time, disposition_clean, disposition, cad.event.clearance.description))
+  
+
+```
+
+
+```{r}
+#create variables
+
+    disorder_desc = c("URINATING, DEFECATING IN PUBLIC", "TRU - DISTURBANCE", "LIQUOR VIOLATIONS - MINOR", "SEX IN PUBLIC PLACE (INCL MASTURBATION)", "VICE - PROSTITUTION", "PANHANDLING, AGGRESSIVE", "LEWD -  (EXPOSING, FLASHING)", "LIQUOR VIOLATIONS - ADULT", "OBS - NOISE - DISTURBANCE (PARTY, ETC)", "OBS - FIGHT - IP - PHYSICAL (NO WEAPONS)", "NARCOTICS - VIOLATIONS (LOITER, USE, SELL, NARS)", "NUISANCE", "DISTURBANCE")
+
+    behavior_desc = c("ABANDONED VEHICLE", "OBS - PROWLER", "TRU - SUSPICIOUS CIRCUMSTANCES", "TRU - HARASSMENT","OBS - PROWLER - IP/JO", "OBS - FIGHT - VERBAL/ORAL (NO WEAPONS)", "DISTURBANCE - DV - NO ASLT", "TRESPASS", "SUSPICIOUS PERSON, VEHICLE, OR INCIDENT")
+
+    gun_desc = c("PROPERTY - DAMAGE (GUN RELATED)", "WEAPN - GUN,DEADLY WPN (NO THRTS/ASLT/DIST)", "ASLT - PERSON SHOT OR SHOT AT", "OBS WEAPN-IP/JO-GUN,DEADLY WPN (NO THRT/ASLT/DIST)", "SHOTS HEARD - IN PROGRESS")
+  
+dfcalls_seattle <- dfcalls_seattle %>%
+  mutate(
+    disorder_flag = as.integer(type_clean %in% disorder_desc),
+    behavior_flag = as.integer(type_clean %in% behavior_desc),
+    gun_flag      = as.integer(type_clean %in% gun_desc)
+  )
+
+#map category 
+category_map <- bind_rows(
+  tibble(type_clean = disorder_desc, category = "Disorder"),
+  tibble(type_clean = behavior_desc, category = "Behavior"),
+  tibble(type_clean = gun_desc, category = "Gun")
+)
+
+
+composition_seattle <- dfcalls_seattle %>%
+  filter(type_clean %in% category_map$type_clean) %>%
+  inner_join(category_map, by = "type_clean") %>%
+  count(category, type_clean, name = "n") %>%
+  group_by(category) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup() %>%
+  # order categories, and order descriptions within each stack by share (desc)
+  mutate(
+    category = factor(category, levels = c("Disorder", "Behavior", "Gun")),
+    type_clean = str_to_title(type_clean)
+  ) %>%
+  arrange(category, desc(share)) %>%
+  mutate(type_clean = factor(type_clean, levels = unique(type_clean)))
+```
+
+```{r, fig.width = 10 }
+p <- ggplot(composition_seattle, aes(x = category, y = share, fill = type_clean)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = ifelse(share >= 0.04,
+                        paste0(type_clean, "\n", percent(share, accuracy = 1)),
+                        "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8, color = "black", lineheight = 0.85
+  ) +
+  facet_wrap(~ category, scales = "free_x") +
+  scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
+  labs(
+    title = "Seattle Composition of Disorder, Behavior, and Gun Calls",
+    subtitle =  "2012–2024",
+    x = NULL,
+    y = "% of category"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.x = element_blank()
+  )
+
+print(p)
+
+
+```
+
+```{r, fig.width = 10}
+composition_seattle %>%
+  arrange(category, desc(share)) %>%
+  group_by(category) %>%
+  mutate(category_display = ifelse(row_number() == 1, as.character(category), "")) %>%
+  ungroup() %>%
+  transmute(
+    Category = category_display,
+    `Call Description` = type_clean,
+    Count = n,
+    `% of Category` = percent(share, accuracy = 0.1)
+  ) %>%
+  knitr::kable(align = c("l", "l", "r", "r")) %>%
+  kable_minimal()
+```
+
+
+```{r, include = FALSE}
+#San Francisco
+vfiles <- list.files("Data/raw/San_Francisco/OneDrive_1_8-2-2026", pattern = "\\.csv\\.gz$", full.names = TRUE)
+dfcalls_list <- vector("list", length(vfiles))
+
+
+columns_selected <- c(
+  "pd_incident_report" ,
+  "received_datetime" ,
+  "onscene_datetime",
+  "close_datetime",
+  "call_type_original",
+  "call_type_original_desc" ,
+  "priority_original",
+  "disposition",
+  "onview_flag"
+)
+
+for (X in seq_along(vfiles)) {
+  dftemp <- fread(vfiles[X], select = columns_selected, check.names = TRUE) %>% 
+    rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v"))
+  
+  if (grepl("Weekly", vfiles[X])) {
+    dftemp <- dftemp %>% rename(dateend = date)
+  }
+  
+  dfcalls_list[[X]] <- dftemp
+}
+
+dfcalls_san_francisco <- bind_rows(dfcalls_list) %>%
+   mutate(
+      disposition = case_when(
+       disposition %in% c("HAN", "GOA", "CIT", "ADV", "REP", "UTL", "NOM", "PAS", "CAN", "NCR", "ARR", "ABA") ~ disposition,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+    
+      calls_disposition_handled = as.integer(disposition_clean %in% c("HAN", "CIT", "ADV", "REP", "PAS", "ARR", "ABA")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("NOM", "CAN", "NCR")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean %in% c("GOA", "UTL")), 
+    
+    
+     priority = priority_original,
+    priority = case_when(
+      priority == "A" ~ "Priority 1",
+      priority == "B" ~ "Priority 2",
+      priority == "C" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")), 
+    type_clean = str_trim(toupper(call_type_original_desc)),
+   
+    calls_disorder = as.integer(type_clean %in% c("VANDALISM DV", "PERSON DUMPING", "PROSTITUTE/SOLICITE", "JUVENILE DISTURBANCE", "GRAFFITI VANDALISM", "PERSON SCREAMING", "INDECENT EXPOSURE", "VANDALISM", "NOISE NUISANCE", "HOMELESS COMPLAINT")),
+    calls_behavior = as.integer(type_clean %in% c("STALKING", "AGGR SOLICITING", "PROWLER", "PERSON W/GUN", "PERSON W/KNIFE", "THREATS / HARASSMENT", "SUSPICIOUS VEHICLE", "TRESPASSER", "SUSPICIOUS PERSON")),
+    calls_traffic = as.integer(type_clean  %in% c("MVA+INJURIES", "AUTO VS PED", "INJURY VEH ACCIDENT", "VEH ACCIDENT")),
+    calls_gun = as.integer(type_clean %in% c("SHOOTING", "SHOT SPOTTER", "SHOTS FIRED")),
+        calls_robbery = as.integer(type_clean  %in% c("PURSE SNATCH", "ROBBERY", "STRONGARM ROBBERY")),
+        calls_aggravated_assault = as.integer(type_clean  %in% c("FIGHT W/WEAPONS", "AGG ASSAULT / ADW", "ASSAULT / BATTERY DV")),
+        calls_burglary = as.integer(type_clean  %in% c("PERSON BREAKING IN", "BURGLARY")),
+        calls_theft = as.integer(type_clean  %in% c("STOLEN PROPERTY", "GRAND THEFT", "PETTY THEFT")),
+        calls_mv_theft = as.integer(type_clean  == "STOLEN VEHICLE"),
+
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                onview_flag == "Y" ~ "Officer",
+                onview_flag == "N" ~ "Citizen",
+                TRUE ~ NA_character_
+              ), 
+    
+    datetime = lubridate::parse_date_time(
+  received_datetime, 
+  orders = c("Ymd IMS p", "mdy IMS p", "mdy IM p", "ymd HMS", "mdy IM")),
+    date = as.Date(datetime),
+    time = format(datetime, "%H:%M:%S"),
+    year = year(datetime),
+    month = month(datetime),
+    day = day(datetime),
+    hour = hour(datetime), 
+    minute = minute(datetime)
+
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(pd_incident_report, received_datetime, call_type_original,
+  call_type_original_desc,
+  priority_original,
+  disposition,
+  onview_flag, 
+  disposition,
+  disposition_clean,
+  priority,
+  initiator
+))
+
+```
+
+
+```{r}
+#create variables
+
+    disorder_desc = c("VANDALISM DV", "PERSON DUMPING", "PROSTITUTE/SOLICITE", "JUVENILE DISTURBANCE", "GRAFFITI VANDALISM", "PERSON SCREAMING", "INDECENT EXPOSURE", "VANDALISM", "NOISE NUISANCE", "HOMELESS COMPLAINT")
+
+    behavior_desc = c("STALKING", "AGGR SOLICITING", "PROWLER", "PERSON W/GUN", "PERSON W/KNIFE", "THREATS / HARASSMENT", "SUSPICIOUS VEHICLE", "TRESPASSER", "SUSPICIOUS PERSON")
+
+    gun_desc = c("SHOOTING", "SHOT SPOTTER", "SHOTS FIRED")
+  
+dfcalls_san_francisco <- dfcalls_san_francisco %>%
+  mutate(
+    disorder_flag = as.integer(type_clean %in% disorder_desc),
+    behavior_flag = as.integer(type_clean %in% behavior_desc),
+    gun_flag      = as.integer(type_clean %in% gun_desc)
+  )
+
+#map category 
+category_map <- bind_rows(
+  tibble(type_clean = disorder_desc, category = "Disorder"),
+  tibble(type_clean = behavior_desc, category = "Behavior"),
+  tibble(type_clean = gun_desc, category = "Gun")
+)
+
+
+composition_san_francisco <- dfcalls_san_francisco %>%
+  filter(type_clean %in% category_map$type_clean) %>%
+  inner_join(category_map, by = "type_clean") %>%
+  count(category, type_clean, name = "n") %>%
+  group_by(category) %>%
+  mutate(share = n / sum(n)) %>%
+  ungroup() %>%
+  # order categories, and order descriptions within each stack by share (desc)
+  mutate(
+    category = factor(category, levels = c("Disorder", "Behavior", "Gun")),
+    type_clean = str_to_title(type_clean)
+  ) %>%
+  arrange(category, desc(share)) %>%
+  mutate(type_clean = factor(type_clean, levels = unique(type_clean)))
+```
+
+```{r, fig.width = 10 }
+p <- ggplot(composition_san_francisco, aes(x = category, y = share, fill = type_clean)) +
+  geom_col(width = 1, color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(label = ifelse(share >= 0.04,
+                        paste0(type_clean, "\n", percent(share, accuracy = 1)),
+                        "")),
+    position = position_stack(vjust = 0.5),
+    size = 2.8, color = "black", lineheight = 0.85
+  ) +
+  facet_wrap(~ category, scales = "free_x") +
+  scale_y_continuous(labels = percent_format(), expand = c(0, 0)) +
+  labs(
+    title = "San Francisco Composition of Disorder, Behavior, and Gun Calls",
+    subtitle =  "2012–2024",
+    x = NULL,
+    y = "% of category"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.x = element_blank()
+  )
+
+print(p)
+
+
+```
+
+```{r, fig.width = 10}
+composition_san_francisco %>%
+  arrange(category, desc(share)) %>%
+  group_by(category) %>%
+  mutate(category_display = ifelse(row_number() == 1, as.character(category), "")) %>%
+  ungroup() %>%
+  transmute(
+    Category = category_display,
+    `Call Description` = type_clean,
+    Count = n,
+    `% of Category` = percent(share, accuracy = 0.1)
+  ) %>%
+  knitr::kable(align = c("l", "l", "r", "r")) %>%
+  kable_minimal()
+```
+
+```{r, fig.width=10}
+#make one dataset
+all_cities <- bind_rows(
+  composition_austin %>% mutate(city = "Austin"),
+  composition_hartford %>% mutate(city = "Hartford"),
+  composition_new_orleans %>% mutate(city = "New Orleans"),
+  composition_seattle %>% mutate(city = "Seattle"),
+  composition_san_francisco %>% mutate(city = "San Francisco")
+)
+
+#clean data
+all_cities_clean <- all_cities %>%
+  mutate(description = coalesce(final.problem.description, type_clean, description_clean, typetext_clean))
+
+#make comparison table
+city_comparison_table <- function(cat_name) {
+  all_cities_clean %>%
+    filter(category == cat_name) %>%
+    group_by(city) %>%
+    arrange(desc(share), .by_group = TRUE) %>%
+    mutate(Rank = row_number()) %>%
+    ungroup() %>%
+    transmute(
+      Rank, city,
+      cell = paste0(description, " (", percent(share, accuracy = 0.1), ")")
+    ) %>%
+    pivot_wider(
+      id_cols = Rank,
+      names_from = city,
+      values_from = cell
+    ) %>%
+    arrange(Rank) %>%
+    mutate(across(-Rank, ~ replace_na(.x, "—")))
+}
+
+
+disorder_table <- city_comparison_table("Disorder")
+behavior_table <- city_comparison_table("Behavior")
+gun_table      <- city_comparison_table("Gun")
+
+
+#change to kable for readability 
+disorder_table %>% knitr::kable(caption = "Disorder Calls by City")
+behavior_table %>% knitr::kable(caption = "Behavior Calls by City")
+gun_table      %>% knitr::kable(caption = "Gun Calls by City")
+
+
+```
+
+
+
+

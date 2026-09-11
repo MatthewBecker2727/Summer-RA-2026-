@@ -1,0 +1,79 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(mosaic)
+library(data.table)
+library(lubridate)
+```
+
+```{r}
+list.files("data/raw", full.names=TRUE)
+
+calls <- fread("data/raw/APD_Computer_Aided_Dispatch_Incidents.csv") #dataset renamed to calls
+
+dim(calls) #rows & columns 
+names(calls) #column titles
+```
+```{r}
+# datetime->date & time
+
+# renaming columns to change
+names(calls)[6]<-"response_datetime" 
+names(calls)[11]<-"arrived_datetime"
+names(calls)[12]<-"closed_datetime"
+
+
+# breaking columns by index & removing datetime columns
+calls<-calls%>%
+  mutate(response_time = str_sub(response_datetime,12,23),
+         response_date = str_sub(response_datetime,1,11),
+         arrived_time = str_sub(arrived_datetime,12,23),
+         arrived_date = str_sub(arrived_datetime,1,11),
+         closed_time = str_sub(closed_datetime,12,23),
+         closed_date = str_sub(closed_datetime,1,11)) %>%
+  select(-"response_datetime",
+         -"arrived_datetime",
+         -"closed_datetime")
+
+# checking my work
+head(calls$response_time)
+head(calls$response_date)
+head(calls$arrived_time)
+head(calls$arrived_date)
+head(calls$closed_time)
+head(calls$closed_date)
+
+head(calls)
+```
+
+```{r}
+# minute of the hour distribution and frequency
+
+##make sure to distinguish in the frequency/graphs between type of time (thats why i split datetime int he first place)
+
+###before starting to work save this and make a new doc for the day!!!!!!
+```
+
+```{r}
+# hour of the day distribution and frequency
+```
+
+```{r}
+# day of the week distribution and frequency
+```
+
+```{r}
+# day-year distribution and frequency
+```
+
+```{r}
+# month-year distribution and frequency
+```
+
+
+
+

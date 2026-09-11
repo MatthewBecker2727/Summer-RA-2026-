@@ -1,0 +1,1113 @@
+---
+title: "081026"
+output: 
+  html_notebook:
+    code_folding: hide
+  
+date: "2026-10-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("suncalc")
+#install.packages("lutz")
+#install.packages("R.utils")
+library(tidyverse)
+library(mosaic)
+library(suncalc)
+library(data.table)
+library(lutz)
+library(arrow)
+library(lubridate)
+library(tidyverse)
+```
+
+
+```{r, include = FALSE}
+dfcity <- tibble(city = c("Austin", "Hartford", "New Orleans", "Seattle", "San Francisco"), 
+                     lat = c(30.2676,  41.7637, 29.9511, 47.6062, 37.7749),
+                     lon = c(-97.7439,-72.6851, -90.0715, -122.3321, -122.4194),
+                     tz = c("America/Chicago", "America/New_York", "America/Chicago",     "America/Los_Angeles", "America/Los_Angeles"))
+                     
+dfdates <- expand.grid(year = 2012:2024, month = 1:12, day = 1:31) %>%
+  filter(complete.cases(ymd(paste(year, month, day)))) %>%
+  mutate(date = ymd(paste(year, month, day, sep = "-")))
+```
+
+```{r}
+vcity <- unique(dfcity$city)
+dfsun <- data.frame()
+
+for(X in vcity){
+  vlat <- dfcity %>% filter(city == X) %>% pull(lat)
+  vlon <- dfcity %>% filter(city == X) %>% pull(lon)
+  vtz <- dfcity %>% filter(city == X) %>% pull(tz)
+  dftemp1 <- tz_offset(dfdates$date, tz = vtz) 
+  dftemp2 <- dfdates %>%
+    mutate(lat = vlat, 
+           lon = vlon) %>%
+    getSunlightTimes(data = ., tz = vtz, keep = c("dawn", "sunrise", "sunset", "dusk", "night")) %>%
+    rename_all(tolower) %>%
+    mutate(wday = lubridate::wday(ymd(date), label = TRUE), 
+           date = as.character(date)) %>%
+    left_join(dftemp1 %>% mutate(date_time = as.character(date_time)), by = c("date" = "date_time")) %>%
+    mutate(city = X, 
+           is_dst = ifelse(is_dst, 1, 0), 
+           year = year(ymd(date)), 
+           month = month(ymd(date)), 
+           day = day(ymd(date))) %>%
+    mutate(across(c(dawn:night), ~ str_extract(., "[0-9]{2}:[0-9]{2}"))) %>%
+    select(date, year, month, day, wday, is_dst, utc_offset_h, city, dawn:night) 
+  
+  dfsun <- dfsun %>%
+    bind_rows(dftemp2)
+}
+```
+
+
+```{r, include = FALSE}
+dfcrime_austin <- fread("Data/raw/Austin/APD_Computer_Aided_Dispatch_Incidents.csv", 
+    select = c("Call Disposition Description", "Priority Level", "Initial Problem Category",  "Response Datetime", "Incident Type")) %>%
+mutate(
+  date_time = mdy_hms(`Response Datetime`),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+    disposition = case_when(
+        `Call Disposition Description` %in% c("No Report", "Report Written", "Unable To Locate", "False Alarm", "Supplement Written", "Non-Police Matter", "Report Written MH", "Reassigned call", "District Representatives", "No Report MH") ~ `Call Disposition Description`,
+      TRUE ~ NA_character_),
+    calls_disposition_handled = as.integer(`Call Disposition Description` %in% c("Report Written", "Supplement Written", "Report Written MH", "District Representatives")), 
+    calls_disposition_no_action = as.integer(`Call Disposition Description` %in% c("No Report", "False Alarm", "Reassigned call", "No Report MH")),
+    calls_disposition_unable_to_locate = as.integer(`Call Disposition Description` == "Unable To Locate"), 
+  
+    priority = `Priority Level`,
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    
+  #coalesce intial problem with final problem or maybe just use final (go into austin rd and make sure which one, prbably use final though)
+  #mispell in disorder
+        calls_disorder = as.integer(`Initial Problem Category` %in% c("Disturbance", "Disorderly Conduct", "Property Damage/Vandalism", "Drugs", "Prositution")),
+    calls_behavior = as.integer(`Initial Problem Category` %in% c("Suspicious Things", "Trespassing")),
+    calls_traffic = as.integer(`Initial Problem Category` == "Crashes"),
+    calls_gun = as.integer(`Initial Problem Category` %in% c("Shoot/Stab", "Weapons/Firearms Violations")),
+         
+        calls_robbery = as.integer(`Initial Problem Category` == "Robbery"),
+        calls_aggravated_assault = as.integer(`Initial Problem Category` == "Aggravated Assault"),
+        calls_burglary = as.integer(`Initial Problem Category` == "Burglary"),
+        calls_theft = as.integer(`Initial Problem Category` == "Theft"),
+        calls_mv_theft = as.integer(`Initial Problem Category` == "Auto Theft"),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `Incident Type` == "Officer-Initiated Incident" ~ "Officer",
+                `Incident Type` == "Dispatched Incident" ~ "Citizen",
+                TRUE ~ NA_character_
+              )
+  
+    ) %>%
+  select(-c(`Response Datetime`, `Call Disposition Description`, `Priority Level`, `Incident Type`, `Initial Problem Category`, `priority`, `date_time`))
+  
+  
+  head(dfcrime_austin)
+```
+
+```{r}
+dfsun_austin <- dfsun %>% 
+  filter(city == "Austin") %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, dawn, sunrise, sunset, dusk, night)
+
+```
+
+```{r, include = FALSE}
+dfcrime_austin <- dfcrime_austin %>%
+  left_join(dfsun_austin, by = "date") %>%
+  mutate(
+    call_time_str = substr(time, 1, 5),
+    
+    is_sunrise   = as.integer(call_time_str >= dawn & call_time_str < sunrise),
+    is_sunset    = as.integer(call_time_str >= sunset  & call_time_str < night),
+  ) %>%
+  group_by(date) %>%
+    mutate(
+      total_calls = n(),
+      calls_sunrise = sum(is_sunrise, na.rm = TRUE),
+      calls_sunset  = sum(is_sunset, na.rm = TRUE),
+  ) %>%
+  ungroup() %>%
+  select(-c(dawn, sunrise, sunset, dusk, night, call_time_str, is_sunrise, is_sunset))
+
+  head(dfcrime_austin)
+  
+```
+
+```{r, include = FALSE}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dfcrime_austin <- dfcrime_austin %>%
+  left_join(dst_dates, by = "year") %>%
+  
+  mutate(
+    days_until_fall_dst   = as.numeric(date - dst_fall),
+    days_until_spring_dst = as.numeric(date - dst_spring)
+  ) %>%
+  
+  select(-c(dst_spring, dst_fall))
+
+
+head(dfcrime_austin)
+```
+
+```{r}
+fwrite(dfcrime_austin, "Data/processed/dfcrime_austin_intermediate.csv")
+
+dfcrime_austin <- fread("Data/processed/dfcrime_austin_intermediate.csv", integer64 = "character")
+
+rm(dfsun_austin, dfcrime_austin_flagged)
+```
+
+
+
+
+```{r, include = FALSE}
+#Hartford 
+
+#check and make sure i have post-2021 data (could be in crimes too)
+
+vfiles <- list.files("Data/raw/Hartford/crimes", full.names = TRUE) 
+
+getwd()
+# Empty list 
+
+dfcalls_list <- vector("list", length(vfiles)) 
+
+# Reads each file and appends it to a list (which is efficient) 
+
+for(X in seq_along(vfiles)){
+
+  dftemp <- fread(vfiles[X], check.names = TRUE) %>% 
+   rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v")) 
+  
+  if(grepl("Weekly", vfiles[X])){ 
+    dftemp <- dftemp %>% 
+      rename(dateend = date) 
+  } 
+  dfcalls_list[[X]] <- dftemp 
+} 
+
+
+rm(dftemp, X, vfiles); gc() 
+
+dfcalls_list <- bind_rows(dfcalls_list) 
+
+rm(dftemp, X, vfiles); gc() 
+
+#Bind all the elements of the list into a single data frame. 
+
+ dfcrime_hartford <- bind_rows(dfcalls_list) %>%
+    select(c("date", "time_24hr", "time", "description_1", "description_2", "description1", "description", "priority", "call_initiated_by" )) %>%
+ 
+mutate(
+      date = as.Date(date), 
+      time_clean = coalesce(time_24hr, time),
+      year = year(date), 
+      month = month(date), 
+      day = day(date), 
+      hour = as.integer(time_clean) %/% 100, 
+      minute = as.integer(time_clean) %% 100, 
+      time_hr_minute = sprintf("%02d:%02d:00", hour, minute),
+      
+   #no disposition
+   priority = case_when(
+      priority == "A" ~ "Priority 1",
+      priority == "B" ~ "Priority 2",
+      priority == "C" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    
+    description_final = coalesce(description_1, description_2, description1, description),
+    calls_disorder = as.integer(`description_final` %in% c("BREACH OF PEACE", "NOISE COMPLAINT", "PROPERTY DAMAGE", "VICE OFFENSE (SPECIFY)", "THREATENING/HARASSMENT", "INTOXICATED PERSON", "GROUP DISTURBING")),
+    calls_behavior = as.integer(`description_final` %in% c("SUSPICIOUS PERSON", "SUSPICIOUS VEHICLE", "LOITERING", "TRESPASSING")),
+    calls_traffic = as.integer(`description_final` %in% c("ACCIDENT (MOTOR VEHICLE)", "ACCIDENT (M/V W/ INJURY)")),
+    calls_gun = as.integer(`description_final` %in% c("SHOTS FIRED", "GUN INVOLVED")),
+    
+    calls_robbery = as.integer(`description_final` %in% c("MUGGING/STREET ROBBERY", "PURSE SNATCH")),
+    calls_aggravated_assault = as.integer(`description_final` == "ASSAULT--SERIOUS"),
+    calls_burglary = as.integer(`description_final` == "BREAKING AND ENTERING"),
+    calls_theft = as.integer(`description_final` == "LARCENY"),
+    calls_mv_theft = as.integer(`description_final` == "STOLEN VEHICLE"),
+    
+    calls_violent = calls_robbery + calls_aggravated_assault,
+    calls_property = calls_burglary + calls_theft + calls_mv_theft,
+    calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+      `call_initiated_by` == "OFFICER" ~ "Officer",
+      `call_initiated_by` %in% c("CITIZEN", "E911 CALL") ~ "Citizen",
+      `call_initiated_by` == "" ~ "Not Available",
+      TRUE ~ NA_character_)
+  
+    ) %>% 
+  filter(year %in% 2012:2024) %>%
+   
+  select(-c(`time_24hr`, `time`, `time_clean`, `description_final`, `description_1`, `description_2`, `description1`, `description`, `priority`, `call_initiated_by`))
+  
+  
+  head(dfcrime_hartford)
+```
+
+```{r}
+dfsun_hartford <- dfsun %>% 
+  filter(city == "Hartford") %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, dawn, sunrise, sunset, dusk, night)
+
+```
+
+```{r, include = FALSE}
+dfcrime_hartford <- dfcrime_hartford %>%
+  left_join(dfsun_hartford, by = "date") %>%
+  mutate(
+    call_time_str = substr(time_hr_minute, 1, 5),
+    is_sunrise = as.integer(call_time_str >= dawn & call_time_str < sunrise),
+    is_sunset = as.integer(call_time_str >= sunset  & call_time_str < night),
+  ) %>%
+  group_by(date) %>%
+    mutate(
+      total_calls = n(),
+      calls_sunrise = sum(is_sunrise, na.rm = TRUE),
+      calls_sunset  = sum(is_sunset, na.rm = TRUE),
+  ) %>%
+  ungroup() %>%
+  select(-c(dawn, sunrise, sunset, dusk, night, call_time_str, is_sunrise, is_sunset))
+
+  head(dfcrime_hartford)
+  
+```
+
+```{r, include = FALSE}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dfcrime_hartford <- dfcrime_hartford %>%
+  left_join(dst_dates, by = "year") %>%
+  
+  mutate(
+    days_until_fall_dst   = as.numeric(date - dst_fall),
+    days_until_spring_dst = as.numeric(date - dst_spring)
+  ) %>%
+  
+  select(-c(dst_spring, dst_fall))
+
+
+head(dfcrime_hartford)
+```
+
+```{r}
+#add a year restriction for years with data only for all intermediate files
+
+fwrite(dfcrime_hartford, "Data/processed/dfcrime_hartford_intermediate.csv")
+
+dfcrime_hartford <- fread("Data/processed/dfcrime_hartford_intermediate.csv", integer64 = "character")
+
+rm(dfsun_hartford)
+```
+
+
+
+```{r, include = FALSE}
+
+
+#New Orleans
+
+vfiles <- list.files("Data/raw/New Orleans/OneDrive_2_7-22-2026", full.names = TRUE) 
+
+getwd()
+# Empty list 
+
+dfcalls_list <- vector("list", length(vfiles)) 
+
+# Reads each file and appends it to a list (which is efficient) 
+
+for(X in seq_along(vfiles)){
+
+  dftemp <- fread(vfiles[X], check.names = TRUE) %>% 
+   rename_all(tolower) %>% 
+    mutate_all(as.character) %>% 
+    select(-starts_with("v")) 
+  
+  if(grepl("Weekly", vfiles[X])){ 
+    dftemp <- dftemp %>% 
+      rename(dateend = date) 
+  } 
+  dfcalls_list[[X]] <- dftemp 
+} 
+
+
+rm(dftemp, X, vfiles); gc() 
+
+
+
+ dfcrime_new_orleans <- bind_rows(dfcalls_list) %>%
+    select(c("typetext", "priority", "initialpriority", "timearrive", "dispositiontext", "selfinitiated")) %>%
+mutate(
+  date_time = mdy_hms(`timearrive`),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+  
+  disposition = case_when(
+        `dispositiontext` %in% c("Necessary Action Taken" , "REPORT TO FOLLOW", "NECESSARY ACTION TAKEN", "GONE ON ARRIVAL","VOID", "UNFOUNDED", "REFERRED TO EXTERNAL AGENCY", "Canceled By Complainant") ~ `dispositiontext`,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+    disposition_clean_combined = case_match(
+      disposition_clean,
+      c("GONE ON ARRIVAL", "UNFOUNDED") ~ "GONE ON ARRIVAL / UNFOUNDED",
+      .default = disposition_clean
+      ),
+   calls_disposition_handled = as.integer(disposition_clean %in% c("Necessary Action Taken", "REPORT TO FOLLOW", "REFERRED TO EXTERNAL AGENCY")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("VOID", "Canceled By Complainant")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean == "GONE ON ARRIVAL", "UNFOUNDED"), 
+  
+    priority = parse_number(priority),
+    initial_priority = parse_number(initialpriority),
+    priority = case_when(
+      priority == "3" ~ "Priority 1",
+      priority == "2" ~ "Priority 2",
+      priority == "1" ~ "Priority 3",
+        is.na(priority) & initial_priority == "3" ~ "Priority 1",
+        is.na(priority) & initial_priority == "2" ~ "Priority 2",
+        is.na(priority) & initial_priority == "1" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")),
+    typetext_clean = str_trim(toupper(typetext)),
+    calls_disorder = as.integer(typetext_clean %in% c("DRUNK", "INDECENT BEHAVIOR", "DRUG ACTIVITY", "OBSCENITY, EXPOSING", "HOMELESS", "DISORDERLY CONDUCT", "DRUG VIOLATIONS", "FIGHT", "DOMESTIC DISTURBANCE", "DISTURBANCE (OTHER)")),
+    calls_behavior = as.integer(typetext_clean %in% c("SUSPICIOUS VEHICLE", "TRESPASSING", "PROWLER", "SUSPICIOUS PERSON")),
+    calls_traffic = as.integer(typetext_clean  %in% c("AUTO ACCIDENT CITY VEHICLE", "ACCIDENT W/INJ - HIT & RUN (PD)", "HIT & RUN WITH INJURIES", "AUTO ACCIDENT WITH I", "ACCIDENT - HIT & RUN", "ACCIDENT - PROPERTY DAMAGE", "AUTO ACCIDENT WITH INJURY", "HIT & RUN", "AUTO ACCIDENT")),
+    calls_gun = as.integer(typetext_clean %in% c("SHOTS FIRED", "DISCHARGING FIREARM" )),
+         
+        calls_robbery = as.integer(typetext_clean  %in% c("ARMED ROBBERY", "SIMPLE ROBBERY, PROPERTY SNATCHING", "SIMPLE ROBBERY", "ARMED ROBBERY WITH GUN")),
+        calls_aggravated_assault = as.integer(typetext_clean  %in% c("AGGRAVATED BATTERY DOMESTIC", "ASSAULT W/WEAPON (PD)", "AGGRAVATED BATTERY B", "AGGRAVATED ASSAULT DOMESTIC", "AGGRAVATED BATTERY", "AGGRAVATED BATTERY BY SHOOTING", "AGGRAVATED ASSAULT")),
+        calls_burglary = as.integer(typetext_clean  %in% c("AGGRAVATED BURGLARY", "COMMERCIAL BURGLARY", "RESIDENTAL BURGLARY (NOT OCCUPIED AT TIME OF INCIDENT)", "SIMPLE BURGLARY", "RESIDENCE BURGLARY")),
+        calls_theft = as.integer(typetext_clean  %in% c("THEFT FROM EXTERIOR", "PICKPOCKET", "THEFT FROM INTERIOR", "BICYCLE THEFT", "SHOPLIFTING", "THEFT")),
+        calls_mv_theft = as.integer(typetext_clean  %in% c("THEFT FROM EXTERIOR OF VEHICLE", "BURGLARY FROM VEHICLE", "VEHICLE STOLEN", "AUTO THEFT", "SIMPLE BURGLARY VEHICLE")),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `selfinitiated` == "Y" ~ "Officer",
+                `selfinitiated` == "N" ~ "Citizen",
+               is.na(selfinitiated) | `selfinitiated` == "NA" ~ "N/A",
+                TRUE ~ NA_character_
+              )
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(`typetext`, `typetext_clean`, `priority`, `initial_priority`, `initialpriority`,  `timearrive`, `dispositiontext`, `selfinitiated`, `date_time`, `disposition`, `disposition_clean`, `disposition_clean_combined`))
+  
+  
+  head(dfcrime_new_orleans)
+```
+
+```{r}
+dfsun_new_orleans <- dfsun %>% 
+  filter(city == "New Orleans") %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, dawn, sunrise, sunset, dusk, night)
+
+```
+
+```{r, include = FALSE}
+dfcrime_new_orleans <- dfcrime_new_orleans %>%
+  left_join(dfsun_new_orleans, by = "date") %>%
+  mutate(
+    call_time_str = substr(time, 1, 5),
+    
+    is_sunrise   = as.integer(call_time_str >= dawn & call_time_str < sunrise),
+    is_sunset    = as.integer(call_time_str >= sunset  & call_time_str < night),
+  ) %>%
+  group_by(date) %>%
+    mutate(
+      total_calls = n(),
+      calls_sunrise = sum(is_sunrise, na.rm = TRUE),
+      calls_sunset  = sum(is_sunset, na.rm = TRUE),
+  ) %>%
+  ungroup() %>%
+  select(-c(dawn, sunrise, sunset, dusk, night, call_time_str, is_sunrise, is_sunset))
+
+  head(dfcrime_new_orleans)
+  
+```
+
+```{r, include = FALSE}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dfcrime_new_orleans <- dfcrime_new_orleans %>%
+  left_join(dst_dates, by = "year") %>%
+  
+  mutate(
+    days_until_fall_dst   = as.numeric(date - dst_fall),
+    days_until_spring_dst = as.numeric(date - dst_spring)
+  ) %>%
+  
+  select(-c(dst_spring, dst_fall))
+
+
+head(dfcrime_new_orleans)
+```
+
+```{r}
+fwrite(dfcrime_new_orleans, "Data/processed/dfcrime_new_orleans_intermediate.csv")
+
+dfcrime_new_orleans <- fread("Data/processed/dfcrime_new_orleans_intermediate.csv", integer64 = "character")
+
+rm(dfsun_new_orleans)
+```
+
+
+
+
+
+```{r}
+#Seattle
+
+columns_selected <- c(
+  "initial call type", "call type indicator", "priority", "call type", "cad event arrived time", "cad event clearance description"
+)
+
+vfiles <- list.files("Data/raw/Seattle", full.names = TRUE)
+dfcalls_list <- vector("list", length(vfiles))
+
+for (X in seq_along(vfiles)) {
+  header <- names(fread(vfiles[X], nrows = 0))
+  sel_cols <- header[tolower(header) %in% columns_selected]
+
+  dftemp <- fread(vfiles[X], select = sel_cols) %>%   # <-- check.names = TRUE removed
+    rename_all(tolower) %>%
+    mutate_all(as.character) %>%
+    select(any_of(columns_selected))
+
+  if (grepl("Weekly", vfiles[X])) {
+    dftemp <- dftemp %>% rename(dateend = date)
+  }
+
+  dfcalls_list[[X]] <- dftemp
+}
+
+lapply(dfcalls_list, names)
+
+rm(dftemp, X, header, sel_cols, vfiles); gc()
+
+
+ dfcrime_seattle <- bind_rows(dfcalls_list) %>%
+   
+mutate(
+  date_time = as.POSIXct(`cad event arrived time`, format = "%Y %b %d %I:%M:%S %p"),
+    date = as.Date(date_time), 
+    time = format(date_time, "%H:%M:%S"), 
+      year = year(date_time), 
+      month = month(date_time), 
+      day = day(date_time), 
+      hour = hour(date_time), 
+      minute = minute(date_time), 
+  
+    disposition = case_when(
+        `cad event clearance description` %in% c("ASSISTANCE RENDERED" , "REPORT WRITTEN (NO ARREST)", "UNABLE TO LOCATE INCIDENT OR COMPLAINANT", "PHYSICAL ARREST MADE","NO POLICE ACTION POSSIBLE OR NECESSARY", "CITATION", "FALSE COMPLAINT/UNFOUNDED", "OTHER REPORT MADE", "FOLLOW-UP REPORT MADE", "RESPONDING UNIT(S) CANCELLED BY RADIO", "PROBLEM SOLVING PROJECT") ~ `cad event clearance description`,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+  
+  calls_disposition_handled = as.integer(disposition_clean %in% c("ASSISTANCE RENDERED", "REPO RT WRITTEN (NO ARREST)", "PHYSICAL ARREST MADE","CITATION", "OTHER REPORT MADE", "FOLLOW-UP REPORT MADE", "PROBLEM SOLVING PROJECT")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("NO POLICE ACTION POSSIBLE OR NECESSARY", "FALSE COMPLAINT/UNFOUNDED", "RESPONDING UNIT(S) CANCELLED BY RADIO")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean == "UNABLE TO LOCATE INCIDENT OR COMPLAINANT"), 
+  
+    priority = case_when(
+      priority == "1" ~ "Priority 1",
+      priority == "2" ~ "Priority 2",
+      priority == "3" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    type_clean = str_trim(toupper(`initial call type`)),
+    calls_disorder = as.integer(type_clean %in% c("URINATING, DEFECATING IN PUBLIC", "TRU - DISTURBANCE", "LIQUOR VIOLATIONS - MINOR", "SEX IN PUBLIC PLACE (INCL MASTURBATION)", "VICE - PROSTITUTION", "PANHANDLING, AGGRESSIVE", "LEWD -  (EXPOSING, FLASHING)", "LIQUOR VIOLATIONS - ADULT", "OBS - NOISE - DISTURBANCE (PARTY, ETC)", "OBS - FIGHT - IP - PHYSICAL (NO WEAPONS)", "NARCOTICS - VIOLATIONS (LOITER, USE, SELL, NARS)", "NUISANCE", "DISTURBANCE")),
+    calls_behavior = as.integer(type_clean %in% c("ABANDONED VEHICLE", "OBS - PROWLER", "TRU - SUSPICIOUS CIRCUMSTANCES", "TRU - HARASSMENT","OBS - PROWLER - IP/JO", "OBS - FIGHT - VERBAL/ORAL (NO WEAPONS)", "DISTURBANCE - DV - NO ASLT", "TRESPASS", "SUSPICIOUS PERSON, VEHICLE, OR INCIDENT")),
+    calls_traffic = as.integer(type_clean  %in% c("TRAFFIC - ROAD RAGE", "OBS - TRU - ACC - HIT AND RUN", "OBS - MVC - UNK INJURIES", "OBS - HIT AND RUN (NO INJURIES). INCLUDES IP/JO", "OBS - ACC - WITH INJURIES (INCLUDES HIT AND RUN)", "MVC - COLLISION (ALL)", "OBS - MVC - NON INJURY, BLOCKING", "TRU - MVC - HIT AND RUN", "MVC - HIT AND RUN", "OBS - MVC - WITH INJURIES (INCLUDES HIT AND RUN)")),
+    calls_gun = as.integer(type_clean %in% c("PROPERTY - DAMAGE (GUN RELATED)", "WEAPN - GUN,DEADLY WPN (NO THRTS/ASLT/DIST)", "ASLT - PERSON SHOT OR SHOT AT", "OBS WEAPN-IP/JO-GUN,DEADLY WPN (NO THRT/ASLT/DIST)", "SHOTS HEARD - IN PROGRESS")),
+         
+        calls_robbery = as.integer(type_clean  %in% c("OBS - PURSE SNATCH - ROBBERY", "OBS - PURSE SNATCH - IP/JO - ROBBERY", "ROBBERY - CRITICAL (INCLUDES STRONG ARM)")),
+        calls_aggravated_assault = as.integer(type_clean  %in% c("FIGHT - WITH WEAPONS", "FIGHT - CRITICAL WITH WEAPONS", "ASLT - DV CRITICAL", "ASLT - CRITICAL (NO SHOOTINGS)")),
+        calls_burglary = as.integer(type_clean  %in% c("TRU - COMMERCIAL BURGLARY", "OBS - BURG - IP/JO - COMM BURG (INCLUDES SCHOOLS)", "BURG - COMM BURGLARY", "BURG - OCCUPIED RESD", "BURG - RESD (INCL UNOCC STRUCTURES ON PROP)")),
+        calls_theft = as.integer(type_clean  %in% c("TRU - SHOPLIFT", "OBS - SECONDARY - FORGERY/BUNCO/SCAMS/ID THEFT", "OBS - SECONDARY - THEFT", "TRU - THEFT", "SHOPLIFT - THEFT", "THEFT (DOES NOT INCLUDE SHOPLIFT OR SVCS)")),
+        calls_mv_theft = as.integer(type_clean  %in% c("CARJACKING - ROBBERY", "TRU - AUTO THEFT", "AUTO THEFT - VEH THEFT OR THEFT AND RECOVERY")),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `call type indicator` == "ONVIEW" ~ "Officer",
+                `call type indicator` == "DISPATCH" ~ "Citizen",
+                TRUE ~ NA_character_
+              )
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(`initial call type`, `call type indicator`, `priority`, `call type`, `cad event arrived time`, `type_clean`, `disposition_clean`, `disposition`, `cad event clearance description`))
+  
+  
+  head(dfcrime_seattle)
+```
+
+```{r}
+dfsun_seattle <- dfsun %>% 
+  filter(city == "Seattle") %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, dawn, sunrise, sunset, dusk, night)
+
+```
+
+```{r}
+dfcrime_seattle <- dfcrime_seattle %>%
+  left_join(dfsun_seattle, by = "date") %>%
+  mutate(
+    call_time_str = substr(time, 1, 5),
+    
+    is_sunrise   = as.integer(call_time_str >= dawn & call_time_str < sunrise),
+    is_sunset    = as.integer(call_time_str >= sunset  & call_time_str < night),
+  ) %>%
+  group_by(date) %>%
+    mutate(
+      total_calls = n(),
+      calls_sunrise = sum(is_sunrise, na.rm = TRUE),
+      calls_sunset  = sum(is_sunset, na.rm = TRUE),
+  ) %>%
+  ungroup() %>%
+  select(-c(dawn, sunrise, sunset, dusk, night, call_time_str, is_sunrise, is_sunset))
+
+  head(dfcrime_seattle)
+  
+```
+
+```{r}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dfcrime_seattle <- dfcrime_seattle %>%
+  left_join(dst_dates, by = "year") %>%
+  
+  mutate(
+    days_until_fall_dst   = as.numeric(date - dst_fall),
+    days_until_spring_dst = as.numeric(date - dst_spring)
+  ) %>%
+  
+  select(-c(dst_spring, dst_fall))
+
+
+head(dfcrime_seattle)
+```
+
+```{r}
+fwrite(dfcrime_seattle, "Data/processed/dfcrime_seattle_intermediate.csv")
+
+dfcrime_seattle <- fread("Data/processed/dfcrime_seattle_intermediate.csv", integer64 = "character")
+
+rm(dfsun_seattle)
+```
+
+
+
+
+
+
+
+
+```{r, include = FALSE}
+#San Francisco
+
+
+columns_selected <- c(
+  "pd_incident_report" ,
+  "received_datetime" ,
+  "call_type_original",
+  "call_type_original_desc" ,
+  "priority_original",
+  "disposition",
+  "onview_flag"
+)
+
+
+vfiles <- list.files("Data/raw/San_Francisco/OneDrive_1_8-2-2026", pattern = "\\.csv\\.gz$", full.names = TRUE)
+dfcalls_list <- vector("list", length(vfiles))
+
+for (X in seq_along(vfiles)) {
+  header <- names(fread(vfiles[X], nrows = 0))
+  sel_cols <- header[tolower(header) %in% columns_selected]
+
+  dftemp <- fread(vfiles[X], select = sel_cols) %>%   # <-- check.names = TRUE removed
+    rename_all(tolower) %>%
+    mutate_all(as.character) %>%
+    select(any_of(columns_selected))
+
+  if (grepl("Weekly", vfiles[X])) {
+    dftemp <- dftemp %>% rename(dateend = date)
+  }
+
+  dfcalls_list[[X]] <- dftemp
+}
+
+lapply(dfcalls_list, names)
+
+rm(dftemp, X, header, sel_cols, vfiles); gc()
+```
+
+
+```{r, include = FALSE}
+dfcrime_san_francisco <- bind_rows(dfcalls_list) %>%
+   mutate(
+      disposition = case_when(
+       `disposition` %in% c("HAN", "GOA", "CIT", "ADV", "REP", "UTL", "NOM", "PAS", "CAN", "NCR", "ARR", "ABA") ~ `disposition`,
+      TRUE ~ NA_character_),
+    disposition_clean = str_trim(toupper(disposition)),
+    
+      calls_disposition_handled = as.integer(disposition_clean %in% c("HAN", "CIT", "ADV", "REP", "PAS", "ARR", "ABA")), 
+    calls_disposition_no_action = as.integer(disposition_clean %in% c("NOM", "CAN", "NCR")),
+    calls_disposition_unable_to_locate = as.integer(disposition_clean %in% c("GOA", "UTL")), 
+    
+    
+     priority = `priority_original`,
+    priority = case_when(
+      priority == "A" ~ "Priority 1",
+      priority == "B" ~ "Priority 2",
+      priority == "C" ~ "Priority 3",
+      TRUE ~ NA_character_
+    ),
+    priority_number = as.numeric(str_extract(priority, "\\d+")), 
+    type_clean = str_trim(toupper(call_type_original_desc)),
+   
+    calls_disorder = as.integer(type_clean %in% c("VANDALISM DV", "PERSON DUMPING", "PROSTITUTE/SOLICITE", "JUVENILE DISTURBANCE", "GRAFFITI VANDALISM", "PERSON SCREAMING", "INDECENT EXPOSURE", "VANDALISM", "NOISE NUISANCE", "HOMELESS COMPLAINT")),
+    calls_behavior = as.integer(type_clean %in% c("STALKING", "AGGR SOLICITING", "PROWLER", "PERSON W/GUN", "PERSON W/KNIFE", "THREATS / HARASSMENT", "SUSPICIOUS VEHICLE", "TRESPASSER", "SUSPICIOUS PERSON")),
+    calls_traffic = as.integer(type_clean  %in% c("MVA+INJURIES", "AUTO VS PED", "INJURY VEH ACCIDENT", "VEH ACCIDENT")),
+    calls_gun = as.integer(type_clean %in% c("SHOOTING", "SHOT SPOTTER", "SHOTS FIRED")),
+        calls_robbery = as.integer(type_clean  %in% c("PURSE SNATCH", "ROBBERY", "STRONGARM ROBBERY")),
+        calls_aggravated_assault = as.integer(type_clean  %in% c("FIGHT W/WEAPONS", "AGG ASSAULT / ADW", "ASSAULT / BATTERY DV")),
+        calls_burglary = as.integer(type_clean  %in% c("PERSON BREAKING IN", "BURGLARY")),
+        calls_theft = as.integer(type_clean  %in% c("STOLEN PROPERTY", "GRAND THEFT", "PETTY THEFT")),
+        calls_mv_theft = as.integer(type_clean  == "STOLEN VEHICLE"),
+
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `onview_flag` == "Y" ~ "Officer",
+                `onview_flag` == "N" ~ "Citizen",
+                TRUE ~ NA_character_
+              ), 
+    
+    datetime = lubridate::parse_date_time(
+  received_datetime, 
+  orders = c("Ymd IMS p", "mdy IMS p", "mdy IM p", "ymd HMS", "mdy IM")),
+    date = as.Date(datetime),
+    time = format(datetime, "%H:%M:%S"),
+    year = year(datetime),
+    month =month(datetime),
+    hour = hour(datetime), 
+    minute = minute(datetime)
+
+    ) %>% filter(year %in% 2012:2024) %>%
+  select(-c(`pd_incident_report`,
+  `received_datetime`,
+  `call_type_original`,
+  `call_type_original_desc`,
+  `priority_original`,
+  `disposition`,
+  `onview_flag`, 
+  `disposition`,
+  `disposition_clean`,
+  `priority`,
+  `type_clean`,
+  `initiator`
+))
+  
+  
+  head(dfcrime_san_francisco)
+```
+
+```{r, include = FALSE}
+dfsun_san_francisco <- dfsun %>% 
+  filter(city == "San Francisco") %>%
+  mutate(date = as.Date(date)) %>%
+  select(date, dawn, sunrise, sunset, dusk, night)
+
+```
+
+```{r, include = FALSE}
+dfcrime_san_francisco <- dfcrime_san_francisco %>%
+  left_join(dfsun_san_francisco, by = "date") %>%
+  mutate(
+    call_time_str = substr(time, 1, 5),
+    
+    is_sunrise   = as.integer(call_time_str >= dawn & call_time_str < sunrise),
+    is_sunset    = as.integer(call_time_str >= sunset  & call_time_str < night),
+  ) %>%
+  group_by(date) %>%
+    mutate(
+      total_calls = n(),
+      calls_sunrise = sum(is_sunrise, na.rm = TRUE),
+      calls_sunset  = sum(is_sunset, na.rm = TRUE),
+  ) %>%
+  ungroup() %>%
+  select(-c(dawn, sunrise, sunset, dusk, night, call_time_str, is_sunrise, is_sunset))
+
+  head(dfcrime_san_francisco)
+  
+```
+
+```{r, include = FALSE}
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dfcrime_san_francisco <- dfcrime_san_francisco %>%
+  left_join(dst_dates, by = "year") %>%
+  
+  mutate(
+    days_until_fall_dst   = as.numeric(date - dst_fall),
+    days_until_spring_dst = as.numeric(date - dst_spring)
+  ) %>%
+  
+  select(-c(dst_spring, dst_fall))
+
+
+head(dfcrime_san_francisco)
+```
+
+```{r, include = FALSE}
+fwrite(dfcrime_san_francisco, "Data/processed/dfcrime_san_francisco_intermediate.csv")
+
+dfcrime_san_francisco <- fread("Data/processed/dfcrime_san_francisco_intermediate.csv", integer64 = "character")
+
+rm(dfsun_san_francisco)
+```
+
+
+
+```{r, include = FALSE}
+library(data.table)
+
+
+city_files <- c(
+  "Austin"        = "Data/processed/dfcrime_austin_intermediate.csv",
+  "Hartford"      = "Data/processed/dfcrime_hartford_intermediate.csv",
+  "New Orleans"   = "Data/processed/dfcrime_new_orleans_intermediate.csv",
+  "Seattle"       = "Data/processed/dfcrime_seattle_intermediate.csv",
+  "San Francisco" = "Data/processed/dfcrime_san_francisco_intermediate.csv"
+)
+
+
+dflist_all <- vector("list", length(city_files))
+
+for (i in seq_along(city_files)) {
+  dftemp <- fread(city_files[i])
+  dftemp[, city := names(city_files)[i]]
+  dflist_all[[i]] <- dftemp
+  rm(dftemp); gc()
+}
+
+
+dfcrime_all <- rbindlist(dflist_all, fill = TRUE)
+
+
+table(dfcrime_all$city)
+dim(dfcrime_all)
+
+rm(dflist_all); gc()
+```
+
+```{r, include = FALSE}
+library(dplyr)
+
+dfcrime_all <- dfcrime_all %>%
+  mutate(
+    date_time = coalesce(date_time, datetime),
+    time = coalesce(time, time_hr_minute)
+  ) %>%
+  select(-datetime, -time_hr_minute, -date_time)
+
+head(dfcrime_all)
+```
+
+```{r}
+#install.packages("arrow")
+library(arrow)
+
+write_parquet(dfcrime_all, "Data/mega/dfcrime_all.parquet")
+```
+
+
+```{r, include = FALSE}
+fwrite(dfcrime_all, "Data/mega/dfcrime_all.csv")
+
+dfcrime_all <- fread("Data/mega/dfcrime_all.csv", integer64 = "character")
+
+```
+
+
+```{r, include = FALSE}
+rm(dfcalls_list); gc()
+```
+
+
+```{r, fig.width = 10}
+#RD 
+
+  
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+#problem!!!!!!!!!
+calls_night <- dfcrime_all %>%
+    mutate(
+    hour_dec = hour + minute / 60,
+    date = as.character(date)
+  ) %>%
+  left_join(dfsun, by = c("city", "date")) %>%
+  filter(hour_dec >= sunset & hour_dec < night) #comparing time to decimals, look at sample code 
+
+calls_sorted_night <- calls_night %>%
+  select(city, date, starts_with("calls_"), priority_number) %>%
+  group_by(city, date) %>%
+  summarise(
+    across(starts_with("calls_"), \(x) sum(x, na.rm = TRUE)),
+    across(starts_with("calls_disposition"), \(x) sum(x, na.rm = TRUE) / n()),
+    calls_average_priority = mean(priority_number, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+dst_rd_spring <- calls_sorted_night %>%
+  mutate( 
+    date = as.Date(date),
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_spring = as.integer(date - dst_spring)) %>%
+  filter(days_until_spring %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_spring >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_spring, dst_on) %>%
+   summarise(
+    across(
+      c(starts_with("calls_"), -starts_with("calls_disposition"), -calls_average_priority),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    across(starts_with("calls_disposition"), ~ mean(.x, na.rm = TRUE)),
+    calls_average_priority = mean(calls_average_priority, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+vnames <- dst_rd_spring %>% select(starts_with("calls_"), -calls_sunrise, -calls_sunset) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_spring, 2)")) 
+  sub_no  <- dst_rd_spring %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_spring %>% filter(dst_on == "yes")
+  
+  if(length(unique(sub_no$days_until_spring)) < 3 | length(unique(sub_yes$days_until_spring)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_spring_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("calls_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_spring_plot, aes(x = days_until_spring, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("All 911 RD:", clean_title), 
+         x = "Days until Spring DST starts", 
+         y = ylabel)
+print(p)
+}
+ 
+  
+```
+
+```{r, fig.width = 10}
+#RD 
+
+  
+dst_dates <- tibble(
+  year = 2012:2024,
+  dst_spring = as.Date(c("2012-03-11", "2013-03-10", "2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2012-11-04", "2013-11-03", "2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+rm(dfcrime_seattle, dfcrime_san_francisco); gc()
+
+calls_night <- dfcrime_all %>%
+    mutate(
+    hour_dec = hour + minute / 60,
+    date = as.character(date)
+  ) %>%
+  left_join(dfsun, by = c("city", "date")) %>%
+  filter(hour_dec >= sunset & hour_dec < night)
+
+calls_sorted_night <- calls_night %>%
+  select(city, date, starts_with("calls_"), priority_number) %>%
+  group_by(city, date) %>%
+  summarise(
+    across(starts_with("calls_"), ~ sum(.x, na.rm = TRUE)),
+    across(starts_with("calls_disposition"), \(x) sum(x, na.rm = TRUE) / n()),
+    calls_average_priority = mean(priority_number, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+dst_rd_fall <- calls_sorted_night %>%
+  mutate( 
+    date = as.Date(date),
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_fall = as.integer(date - dst_fall)) %>%
+  filter(days_until_fall %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_fall >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_fall, dst_on) %>%
+  summarise(
+    across(
+      c(starts_with("calls_"), -starts_with("calls_disposition"), -calls_average_priority),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    across(starts_with("calls_disposition"), ~ mean(.x, na.rm = TRUE)),
+    calls_average_priority = mean(calls_average_priority, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+vnames <- dst_rd_fall %>% select(starts_with("calls_"), -calls_sunrise, -calls_sunset) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_fall, 2)")) 
+  sub_no  <- dst_rd_fall %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_fall %>% filter(dst_on == "yes")
+
+  if(length(unique(sub_no$days_until_fall)) < 3 | length(unique(sub_yes$days_until_fall)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_fall_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("calls_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_fall_plot, aes(x = days_until_fall, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("All 911 RD:", clean_title), 
+         x = "Days until Fall DST starts", 
+         y = ylabel)
+print(p)
+}
+ 
+  
+```

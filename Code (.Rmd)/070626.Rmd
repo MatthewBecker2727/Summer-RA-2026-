@@ -1,0 +1,504 @@
+---
+title: "Austin 911 RD"
+output: 
+  html_notebook:
+    code_folding: hide
+  
+date: "2026-07-08"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("suncalc")
+#install.packages("lutz")
+library(tidyverse)
+library(mosaic)
+library(data.table)
+library(lubridate)
+library(suncalc)
+library(lutz)
+```
+
+```{r, include=FALSE}
+list.files("data/raw", full.names=TRUE)
+
+calls <- fread("../data/raw/APD_Computer_Aided_Dispatch_Incidents.csv") 
+```
+
+```{r, include=FALSE}
+# datetime->date & time
+
+# renaming columns to change
+names(calls) [6] <- "response_datetime" 
+names(calls) [11] <- "arrived_datetime"
+names(calls) [12] <- "closed_datetime"
+
+
+# breaking columns by index
+calls <- calls %>%
+  mutate(response_time = str_sub(response_datetime,12,23),
+         response_date = str_sub(response_datetime,1,11),
+         arrived_time = str_sub(arrived_datetime,12,23),
+         arrived_date = str_sub(arrived_datetime,1,11),
+         closed_time = str_sub(closed_datetime,12,23),
+         closed_date = str_sub(closed_datetime,1,11),
+         initiator = case_when(
+                `Incident Type` == "Officer-Initiated Incident" ~ "Officer",
+                `Incident Type` == "Dispatched Incident" ~ "Citizen",
+                TRUE ~ NA_character_)
+        )
+
+# checking my work
+head(calls$response_time)
+head(calls$response_date)
+head(calls$arrived_time)
+head(calls$arrived_date)
+head(calls$closed_time)
+head(calls$closed_date)
+
+head(calls)
+```
+
+```{r, warning=FALSE, include=FALSE}
+# Call Type Classification
+calls_sorted <- calls %>%
+  mutate(
+    calls_disorder = as.integer(`Initial Problem Category` %in% c("Disturbance", "Disorderly Conduct", "Property Damage/Vandalism", "Drugs", "Prositution")),
+    calls_behavior = as.integer(`Initial Problem Category` %in% c("Suspicious Things", "Trespassing")),
+    calls_traffic = as.integer(`Initial Problem Category` == "Crashes"),
+    calls_gun = as.integer(`Initial Problem Category` %in% c("Shoot/Stab", "Weapons/Firearms Violations")),
+         
+        calls_robbery = as.integer(`Initial Problem Category` == "Robbery"),
+        calls_aggravated_assault = as.integer(`Initial Problem Category` == "Aggravated Assault"),
+        calls_burglary = as.integer(`Initial Problem Category` == "Burglary"),
+        calls_theft = as.integer(`Initial Problem Category` == "Theft"),
+        calls_mv_theft = as.integer(`Initial Problem Category` == "Auto Theft"),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `Incident Type` == "Officer-Initiated Incident" ~ "Officer",
+                `Incident Type` == "Dispatched Incident" ~ "Citizen",
+                TRUE ~ NA_character_
+          
+              )
+)
+```
+
+```{r}
+# day-year
+by_day <- calls %>%
+  mutate(
+    date_response = as_date(mdy_hms(response_datetime))
+    ) %>%
+      count(date_response, initiator) %>%
+      rename(day = date_response)
+  
+ggplot(by_day, aes(day, n, color = initiator, group = initiator)) +
+  geom_line(alpha = .7) +
+  facet_wrap(~initiator, scales = "free_y") +
+  labs(title = "Austin 911 Calls by Timeline and Initiator", x = "Day", y = "Calls") 
+
+```
+
+
+```{r}
+# month-year
+
+by_month <- calls%>% 
+  mutate (
+    month_response = floor_date(mdy_hms(response_datetime), "month")
+  ) %>%
+      count(month_response, initiator) %>%
+        rename(month = month_response)
+
+  
+ggplot(by_month, aes(month, n, color = initiator, group = initiator)) +
+  geom_line() +
+  facet_wrap(~initiator, scales = "free_y") +
+  labs(title = "Austin 911 Calls by Month and Initiator", x = "Month", y = "Calls") 
+```
+
+
+```{r}
+# day-year
+by_day <- calls %>%
+  mutate(
+    date_response = as_date(mdy_hms(response_datetime))
+    ) %>%
+      count(date_response, initiator) %>%
+      rename(day = date_response)
+  
+ggplot(by_day, aes(day, n, color = initiator, group = initiator)) +
+  geom_line(alpha = .7) +
+  facet_wrap(~initiator, scales = "free_y") +
+  coord_cartesian(xlim = c(as_date("2017-03-01"), as_date("2017-08-01"))) +
+  labs(title = "Austin 911 Calls by Timeline and Initiator", x = "Day", y = "Calls") 
+```
+
+
+```{r, warning = FALSE}
+by_month <- calls_sorted %>% 
+  mutate (
+    month_response = floor_date(mdy_hms(response_datetime), "month"),
+    month_arrived = floor_date(mdy_hms(arrived_datetime), "month"),
+    month_closed = floor_date(mdy_hms(closed_datetime), "month")
+  )
+  
+  
+by_month_type <- bind_rows(
+  by_month %>% filter(calls_robbery == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Robbery"),
+  by_month %>% filter(calls_aggravated_assault == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_month %>% filter(calls_burglary == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Burglary"),
+  by_month %>% filter(calls_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Theft"), 
+  by_month %>% filter(calls_mv_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "MV Theft"),
+  by_month %>% filter(calls_disorder == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Disorder"),
+  by_month %>% filter(calls_behavior == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_month %>% filter(calls_traffic == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Traffic"),
+  by_month %>% filter(calls_gun == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Gunshots"),
+  by_month %>% filter(calls_violent == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Violent Crime"),
+  by_month %>% filter(calls_property == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Property Crime")
+)
+
+by_month_type_proportional <- by_month_type %>%
+  group_by(initiator, type) %>%
+  mutate(proportional = n / sum(n)) %>%
+  ungroup()
+
+ggplot(by_month_type_proportional, aes(month, proportional, color = initiator, group = initiator)) +
+  geom_line(alpha = .5) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~type, scales = "free_y") + 
+  labs(title = "Austin 911 Calls by Month, Type, and Initiator (Cleaned)", x = "Month", y = "Calls*") +
+  theme_minimal() 
+  
+```
+
+```{r, fig.width = 20}
+by_time <- calls_sorted %>%
+  mutate(hour = hour(mdy_hms(response_datetime)),
+         day_of_week = wday(mdy_hms(response_datetime))
+         )
+
+heatmap_by_type <- bind_rows(
+  by_time %>% filter(calls_robbery == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Robbery"),
+  by_time %>% filter(calls_aggravated_assault == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_time %>% filter(calls_burglary == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Burglary"),
+  by_time %>% filter(calls_theft == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Theft"), 
+  by_time %>% filter(calls_mv_theft == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "MV Theft"),
+  by_time %>% filter(calls_disorder == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Disorder"),
+  by_time %>% filter(calls_behavior == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_time %>% filter(calls_traffic == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Traffic"),
+  by_time %>% filter(calls_gun == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Gunshots"),
+  by_time %>% filter(calls_violent == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Violent Crime"),
+  by_time %>% filter(calls_property == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Property Crime")
+)
+
+
+ggplot(heatmap_by_type %>% filter(initiator == "Citizen"), 
+       aes(hour, day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free") +
+  theme_minimal() +
+   labs(title = "Austin 911 Officer Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "Total Calls") 
+
+
+ggplot(heatmap_by_type %>% filter(initiator == "Officer"),
+       aes(hour, day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free") +
+  theme_minimal() +
+   labs(title = "Austin 911 Citizen Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "Total Calls") 
+
+
+
+
+# By percent so we can see the smaller types
+
+heatmap_by_type_percent <- heatmap_by_type %>%
+  group_by(type, initiator) %>%
+  mutate( percent = (n / sum(n)) * 100) %>%
+  ungroup()
+
+ggplot(heatmap_by_type_percent %>% filter(initiator == "Citizen"), 
+       aes(hour, day_of_week, fill = percent)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free")  +
+  theme_minimal() +
+   labs(title = "Austin 911 Citizen Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "% of Types Total") 
+
+ggplot(heatmap_by_type_percent %>% filter(initiator == "Officer"),
+       aes(hour, day_of_week, fill = percent)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free")  +
+  theme_minimal() +
+   labs(title = "Austin 911 Officer Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "% of Types Total") 
+
+```
+
+```{r, include=FALSE}
+#Information needed 
+
+
+df_dates <- expand.grid(year = 2014:2024, month = 1:12, day = 1:31) %>% 
+
+  filter(complete.cases(ymd(paste(year, month, day)))) %>% 
+
+  mutate(date = ymd(paste(year, month, day, sep = "-"))) %>% 
+
+  arrange(date) 
+
+ df_dates
+
+#Get suntime data 
+
+
+df_sun <- df_dates %>% 
+
+  mutate(lat = 30.267118,  
+
+         lon = -97.743130) %>% 
+
+  getSunlightTimes(data = ., tz = "America/Chicago", keep = c("dawn", "sunrise", "sunset", "dusk", "night")) %>% 
+
+  rename_all(tolower) %>%
+  mutate(
+    dawn = hour(dawn) + minute(dawn) / 60,
+    sunrise = hour(sunrise) + minute(sunrise) / 60,
+    sunset = hour(sunset) + minute(sunset) / 60,
+    dusk = hour(dusk) + minute(dusk) / 60,
+    night = hour(night) + minute(night) / 60
+  )
+
+df_sun
+
+```
+
+
+```{r}
+df_sun %>%
+  filter(year(date) == 2023) %>%
+  ggplot() +
+    geom_area(aes(x = date, y = dusk), fill = "skyblue3") +  
+    geom_area(aes(x = date, y = sunset), fill = "khaki1") +  
+    geom_area(aes(x = date, y = sunrise), fill = "skyblue3") +  
+    geom_area(aes(x = date, y = dawn), fill = "grey90") +  
+      scale_y_continuous(breaks = seq(0, 23, 2), expand = c(0, 0)) +  
+      scale_x_date(date_labels =  "%b", date_breaks = "1 month", expand = c(0,0)) + 
+      coord_cartesian(ylim = c(0, 23)) +  
+      labs(x = "Month of 2023", y = "Time of the day") +  
+      theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14), 
+        panel.background = element_rect(fill = "grey90"),   
+        panel.grid = element_blank(),  
+        panel.border = element_blank(),   
+        rect = element_blank(),  
+        axis.line = element_blank()
+        )  
+
+```
+
+
+```{r}
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+
+dst_dates <- tibble(
+  year = 2014:2024,
+  dst_spring = as.Date(c("2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+calls_night <- calls_sorted %>%
+  mutate(
+    date = as.Date(substr(response_datetime, 1, 10), format = "%m/%d/%Y"),
+    time_parsed = strptime(response_time, format = "%I:%M:%S %p"),
+    hour_dec = hour(time_parsed) + minute(time_parsed) / 60 + second(time_parsed) / 3600
+  ) %>%
+  left_join(df_sun, by = "date") %>%
+  filter(hour_dec >= sunset & hour_dec < night)
+
+calls_sorted_night <- calls_night %>%
+  group_by(date) %>%
+  summarise_at(vars(starts_with("calls_")), sum, na.rm = TRUE) %>%
+  ungroup()
+
+dst_rd_spring <- calls_sorted_night %>%
+  mutate( 
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_spring = as.integer(date - dst_spring)) %>%
+  filter(days_until_spring %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_spring >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_spring, dst_on) %>%
+  summarise_at(vars(starts_with("calls_")), mean, na.rm = TRUE) %>%
+  ungroup()
+
+vnames <- dst_rd_spring %>% select(starts_with("calls_")) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_spring, 2)")) 
+  sub_no  <- dst_rd_spring %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_spring %>% filter(dst_on == "yes")
+
+  if(length(unique(sub_no$days_until_spring)) < 3 | length(unique(sub_yes$days_until_spring)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_spring_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("calls_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_spring_plot, aes(x = days_until_spring, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("Austin 911 RD:", clean_title), 
+         x = "Days until Spring DST starts", 
+         y = ylabel)
+print(p)
+}
+
+
+```
+
+```{r}
+plottheme <- theme( 
+  axis.text.x = element_text(size = 15), 
+  axis.text.y = element_text(size = 15), 
+  axis.title.x = element_text(size = 20), 
+  axis.title.y = element_text(size = 20), 
+  strip.text.x = element_text(size = 12), 
+  strip.background = element_rect(fill = "grey85", color = "black"), 
+  panel.background = element_blank(),  
+  axis.line = element_line(colour = "black"), 
+  legend.key = element_rect(colour = "transparent", fill = "transparent"), 
+  legend.key.width = unit(2, "cm"), 
+  legend.text = element_text(size = 20), 
+  legend.title = element_text(size = 20), 
+  legend.position = "none", 
+  rect = element_rect(fill = "transparent")
+  )
+
+
+dst_dates <- tibble(
+  year = 2014:2024,
+  dst_spring = as.Date(c("2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+calls_night_fall <- calls_sorted %>%
+  mutate(
+    date = as.Date(substr(response_datetime, 1, 10), format = "%m/%d/%Y"),
+    time_parsed = strptime(response_time, format = "%I:%M:%S %p"),
+    hour_dec = hour(time_parsed) + minute(time_parsed) / 60 + second(time_parsed) / 3600
+  ) %>%
+  left_join(df_sun, by = "date") %>%
+  filter(hour_dec >= sunset & hour_dec < night)
+
+calls_sorted_night_fall <- calls_night_fall %>%
+  group_by(date) %>%
+  summarise_at(vars(starts_with("calls_")), sum, na.rm = TRUE) %>%
+  ungroup()
+
+dst_rd_fall <- calls_sorted_night_fall %>%
+  mutate( 
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_until_fall = as.integer(date - dst_fall)) %>%
+  filter(days_until_fall %in% -21:21) %>%
+  mutate(
+    dst_on = if_else(days_until_fall >= 0, "yes", "no")
+  ) %>%
+  group_by(days_until_fall, dst_on) %>%
+  summarise_at(vars(starts_with("calls_")), mean, na.rm = TRUE) %>%
+  ungroup()
+
+vnames <- dst_rd_fall %>% select(starts_with("calls_")) %>% names()
+
+
+for(X in vnames){ 
+
+  f1 <- as.formula(paste0(X, "~ poly(days_until_fall, 2)")) 
+  sub_no  <- dst_rd_fall %>% filter(dst_on == "no")
+  sub_yes <- dst_rd_fall %>% filter(dst_on == "yes")
+
+  if(length(unique(sub_no$days_until_fall)) < 3 | length(unique(sub_yes$days_until_fall)) < 3) next
+
+  lm1 <- lm(f1, data = sub_no)
+  lm2 <- lm(f1, data = sub_yes)
+  pred1 <- predict(lm1, newdata = sub_no, se = TRUE)
+  pred2 <- predict(lm2, newdata = sub_yes, se = TRUE)
+
+  dst_rd_fall_plot <- bind_rows(sub_no, sub_yes) %>%
+    mutate(pred = c(pred1$fit, pred2$fit), 
+           upper = c(pred1$fit, pred2$fit) - qnorm(0.975)*c(pred1$se.fit, pred2$se.fit), 
+           lower = c(pred1$fit, pred2$fit) + qnorm(0.975)*c(pred1$se.fit, pred2$se.fit)) 
+
+  clean_title <- X %>% 
+    str_replace("calls_", "") %>% 
+    str_replace("_", " ") %>% 
+    str_to_title()
+  
+  ylabel <- ifelse(str_detect(X, "clearedrate"), "Clearance rate", "Crimes") 
+  
+p <- ggplot(dst_rd_fall_plot, aes(x = days_until_fall, y = .data[[X]])) + 
+    geom_point(aes(group = dst_on), size = 3, color = "royalblue", shape = 1) + 
+    geom_line(aes(y = pred, group = dst_on)) + 
+    geom_line(aes(y = upper, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_line(aes(y = lower, group = dst_on), linetype = "dashed", linewidth = 0.7, color = "grey80") + 
+    geom_vline(xintercept = -0.5, linetype = "dashed", linewidth = 0.5) +  
+    labs(title = paste("Austin 911 RD:", clean_title), 
+         x = "Days until Fall DST starts", 
+         y = ylabel)
+print(p)
+}
+
+
+```
+

@@ -1,0 +1,565 @@
+---
+title: 'Austin 911 by Type'
+output: 
+  html_notebook:
+    code_folding: hide
+  
+date: "2026-07-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(mosaic)
+library(data.table)
+library(lubridate)
+```
+
+```{r, include=FALSE}
+list.files("data/raw", full.names=TRUE)
+
+calls <- fread("../data/raw/APD_Computer_Aided_Dispatch_Incidents.csv") #dataset renamed to calls
+```
+
+```{r, include=TRUE}
+# datetime->date & time
+
+# renaming columns to change
+names(calls) [6] <- "response_datetime" 
+names(calls) [11] <- "arrived_datetime"
+names(calls) [12] <- "closed_datetime"
+
+
+# breaking columns by index
+calls <- calls %>%
+  mutate(response_time = str_sub(response_datetime,12,23),
+         response_date = str_sub(response_datetime,1,11),
+         arrived_time = str_sub(arrived_datetime,12,23),
+         arrived_date = str_sub(arrived_datetime,1,11),
+         closed_time = str_sub(closed_datetime,12,23),
+         closed_date = str_sub(closed_datetime,1,11))
+
+# checking my work
+head(calls$response_time)
+head(calls$response_date)
+head(calls$arrived_time)
+head(calls$arrived_date)
+head(calls$closed_time)
+head(calls$closed_date)
+
+head(calls)
+```
+
+
+
+
+```{r, include=TRUE}
+# Frequency Table by Call Type
+as_tibble(calls) %>%
+  count(`Initial Problem Category`, sort = TRUE) %>%
+  print(n = 100)
+
+as_tibble(calls) %>%
+  count(`Incident Type`, sort = TRUE) %>%
+  print(n = 100)
+```
+
+```{r, warning=FALSE}
+# Call Type Classification
+calls_sorted <- calls %>%
+  mutate(
+    calls_disorder = as.integer(`Initial Problem Category` %in% c("Disturbance", "Disorderly Conduct", "Property Damage/Vandalism", "Drugs", "Prositution")),
+    calls_behavior = as.integer(`Initial Problem Category` %in% c("Suspicious Things", "Trespassing")),
+    calls_traffic = as.integer(`Initial Problem Category` == "Crashes"),
+    calls_gun = as.integer(`Initial Problem Category` %in% c("Shoot/Stab", "Weapons/Firearms Violations")),
+         
+        calls_robbery = as.integer(`Initial Problem Category` == "Robbery"),
+        calls_aggravated_assault = as.integer(`Initial Problem Category` == "Aggravated Assault"),
+        calls_burglary = as.integer(`Initial Problem Category` == "Burglary"),
+        calls_theft = as.integer(`Initial Problem Category` == "Theft"),
+        calls_mv_theft = as.integer(`Initial Problem Category` == "Auto Theft"),
+  
+            calls_violent = calls_robbery + calls_aggravated_assault,
+            calls_property = calls_burglary + calls_theft + calls_mv_theft,
+            calls_index = calls_violent + calls_property,
+    
+              initiator = case_when(
+                `Incident Type` == "Officer-Initiated Incident" ~ "Officer",
+                `Incident Type` == "Dispatched Incident" ~ "Citizen",
+                TRUE ~ NA_character_
+              )
+)
+```
+
+
+```{r, fig_width = 20}
+# only getting the minute integers from the time of day
+calls_sorted <- calls_sorted %>%
+  mutate(
+    response_minute = as.integer(str_sub(response_time,4,5)),
+    arrived_minute = as.integer(str_sub(arrived_time,4,5)),
+    closed_minute = as.integer(str_sub(closed_time,4,5))
+  )
+
+# distribution of all times together
+by_minute_type <- bind_rows(
+  calls_sorted %>% filter(calls_robbery == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Robbery"),
+  calls_sorted %>% filter(calls_aggravated_assault == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Aggravated Assault"),
+  calls_sorted %>% filter(calls_burglary == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Burglary"),
+  calls_sorted %>% filter(calls_theft == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Theft"),
+  calls_sorted %>% filter(calls_mv_theft == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "MV Theft"),
+  calls_sorted %>% filter(calls_disorder == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Disorder"),
+  calls_sorted %>% filter(calls_behavior == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Susp/Unwanted"),
+  calls_sorted %>% filter(calls_traffic == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Traffic"),
+  calls_sorted %>% filter(calls_gun == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Gunshots"),
+  calls_sorted %>% filter(calls_violent == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Violent Crime"),
+  calls_sorted %>% filter(calls_property == 1) %>% count(minute = response_minute, initiator) %>% mutate(type = "Property Crime")
+)
+
+# graphed distribution of 911 times by hour
+ggplot(by_minute_type, aes(minute, n, color = type)) +
+  geom_line() + 
+  facet_wrap(~initiator, scales = "free_y") +
+  scale_x_continuous(breaks = seq(0, 59, by = 5)) +
+  labs(title = "Austin 911 Times by Minute of the Hour, Call Type, and Initiator", x = "Minute", y = "Calls") +
+  theme_minimal()
+  
+```
+
+
+```{r, fig_width = 20}
+
+calls_sorted <- calls_sorted %>%
+   mutate(
+    response_hour = as.numeric(format(strptime(response_time, format = "%I:%M:%S %p"),"%H")),
+    arrived_hour = as.numeric(format(strptime(arrived_time, format = "%I:%M:%S %p"), "%H")),
+    closed_hour = as.numeric(format(strptime(closed_time, format = "%I:%M:%S %p"), "%H"))
+  )
+
+
+by_hour_type <- bind_rows(
+  calls_sorted %>% filter(calls_robbery == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Robbery"),
+  calls_sorted %>% filter(calls_aggravated_assault == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Aggravated Assault"),
+  calls_sorted %>% filter(calls_burglary == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Burglary"),
+  calls_sorted %>% filter(calls_theft == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Theft"),
+  calls_sorted %>% filter(calls_mv_theft == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "MV Theft"),
+  calls_sorted %>% filter(calls_disorder == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Disorder"),
+  calls_sorted %>% filter(calls_behavior == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Susp/Unwanted"),
+  calls_sorted %>% filter(calls_traffic == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Traffic"),
+  calls_sorted %>% filter(calls_gun == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Gunshots"),
+  calls_sorted %>% filter(calls_violent == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Violent Crime"),
+  calls_sorted %>% filter(calls_property == 1) %>% count(hour = response_hour, initiator) %>% mutate(type = "Property Crime")
+)
+
+# graphed distribution of 911 times by hour
+ggplot(by_hour_type, aes(hour, n, color = type)) +
+  geom_line() + 
+  facet_wrap(~initiator, scales = "free_y") +
+  scale_x_continuous(breaks = seq(0, 59, by = 3)) +
+  labs(title = "Austin 911 Times by Hour of the Day, Call Type, and Initiator", x = "Hour", y = "Calls")+
+  theme_minimal()
+```
+
+```{r, fig_width = 20}
+# day of the week distribution and frequency
+
+names(calls_sorted) [9] <- "day_week"
+
+# frequency of calls by day of the week
+by_day_week <- calls_sorted %>% count(day = day_week)
+
+  
+by_week_type <- bind_rows(
+  calls_sorted %>% filter(calls_robbery == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Robbery"),
+  calls_sorted %>% filter(calls_aggravated_assault == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Aggravated Assault"),
+  calls_sorted %>% filter(calls_burglary == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Burglary"),
+  calls_sorted %>% filter(calls_theft == 1) %>% count(day= day_week, initiator) %>% mutate(type = "Theft"), 
+  calls_sorted %>% filter(calls_mv_theft == 1) %>% count(day = day_week, initiator) %>% mutate(type = "MV Theft"),
+  calls_sorted %>% filter(calls_disorder == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Disorder"),
+  calls_sorted %>% filter(calls_behavior == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Susp/Unwanted"),
+  calls_sorted %>% filter(calls_traffic == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Traffic"),
+  calls_sorted %>% filter(calls_gun == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Gunshots"),
+  calls_sorted %>% filter(calls_violent == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Violent Crime"),
+  calls_sorted %>% filter(calls_property == 1) %>% count(day = day_week, initiator) %>% mutate(type = "Property Crime")
+)
+
+# fix the order of days 
+  by_week_type$day <- factor(by_week_type$day, 
+                            levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+  
+  ggplot(by_week_type, aes(day, n, color = type, group = type)) +
+  geom_line() +
+  facet_wrap(~initiator, scales = "free_y") +
+  labs(title = "Austin 911 Calls by Day of the Week, Type, and Initiator", x = "Day", y = "Calls") 
+  
+  
+
+```
+
+```{r}
+# day-year
+by_date <- calls_sorted %>%
+  mutate(
+    date_response = as_date(mdy_hms(response_datetime)),
+    date_arrived = as_date(mdy_hms(arrived_datetime)),
+    date_closed = as_date(mdy_hms(closed_datetime)))
+  
+by_day_type <- bind_rows(
+  by_date %>% filter(calls_robbery == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Robbery"),
+  by_date %>% filter(calls_aggravated_assault == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_date %>% filter(calls_burglary == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Burglary"),
+  by_date %>% filter(calls_theft == 1) %>% count(day= date_response, initiator) %>% mutate(type = "Theft"), 
+  by_date %>% filter(calls_mv_theft == 1) %>% count(day = date_response, initiator) %>% mutate(type = "MV Theft"),
+  by_date %>% filter(calls_disorder == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Disorder"),
+  by_date %>% filter(calls_behavior == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_date %>% filter(calls_traffic == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Traffic"),
+  by_date %>% filter(calls_gun == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Gunshots"),
+  by_date %>% filter(calls_violent == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Violent Crime"),
+  by_date %>% filter(calls_property == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Property Crime")
+)
+
+  
+ggplot(by_day_type, aes(day, n, color = type, group = type)) +
+  geom_line(alpha = .7) +
+  facet_wrap(~initiator, scales = "free_y") +
+  labs(title = "Austin 911 Calls by Timeline, Type, and Initiator", x = "Day", y = "Calls") 
+
+
+```
+
+```{r, warning = FALSE}
+# day-year w/o outlier
+by_date <- calls_sorted %>%
+  mutate(
+    date_response = as_date(mdy_hms(response_datetime)),
+    date_arrived = as_date(mdy_hms(arrived_datetime)),
+    date_closed = as_date(mdy_hms(closed_datetime)))
+  
+by_day_type <- bind_rows(
+  by_date %>% filter(calls_robbery == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Robbery"),
+  by_date %>% filter(calls_aggravated_assault == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_date %>% filter(calls_burglary == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Burglary"),
+  by_date %>% filter(calls_theft == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Theft"), 
+  by_date %>% filter(calls_mv_theft == 1) %>% count(day = date_response, initiator) %>% mutate(type = "MV Theft"),
+  by_date %>% filter(calls_disorder == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Disorder"),
+  by_date %>% filter(calls_behavior == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_date %>% filter(calls_traffic == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Traffic"),
+  by_date %>% filter(calls_gun == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Gunshots"),
+  by_date %>% filter(calls_violent == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Violent Crime"),
+  by_date %>% filter(calls_property == 1) %>% count(day = date_response, initiator) %>% mutate(type = "Property Crime")
+)
+
+  
+ggplot(by_day_type, aes(day, n, color = initiator, group = initiator)) +
+  geom_line(alpha = .5) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~type, scales = "free_y") + 
+  labs(title = "Austin 911 Calls by Timeline, Type, and Initiator (Cleaned)", x = "Day", y = "Calls") +
+  theme_minimal() 
+  
+
+
+```
+
+```{r}
+# month-year
+
+by_month <- calls_sorted %>% 
+  mutate (
+    month_response = floor_date(mdy_hms(response_datetime), "month"),
+    month_arrived = floor_date(mdy_hms(arrived_datetime), "month"),
+    month_closed = floor_date(mdy_hms(closed_datetime), "month")
+  )
+  
+  
+by_month_type <- bind_rows(
+  by_month %>% filter(calls_robbery == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Robbery"),
+  by_month %>% filter(calls_aggravated_assault == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_month %>% filter(calls_burglary == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Burglary"),
+  by_month %>% filter(calls_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Theft"), 
+  by_month %>% filter(calls_mv_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "MV Theft"),
+  by_month %>% filter(calls_disorder == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Disorder"),
+  by_month %>% filter(calls_behavior == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_month %>% filter(calls_traffic == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Traffic"),
+  by_month %>% filter(calls_gun == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Gunshots"),
+  by_month %>% filter(calls_violent == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Violent Crime"),
+  by_month %>% filter(calls_property == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Property Crime")
+)
+
+  
+ggplot(by_month_type, aes(month, n, color = type, group = type)) +
+  geom_line() +
+  facet_wrap(~initiator, scales = "free_y") +
+  labs(title = "Austin 911 Calls by Month, Type, and Initiator", x = "Month", y = "Calls") 
+```
+
+
+```{r, warning = FALSE}
+by_month <- calls_sorted %>% 
+  mutate (
+    month_response = floor_date(mdy_hms(response_datetime), "month"),
+    month_arrived = floor_date(mdy_hms(arrived_datetime), "month"),
+    month_closed = floor_date(mdy_hms(closed_datetime), "month")
+  )
+  
+  
+by_month_type <- bind_rows(
+  by_month %>% filter(calls_robbery == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Robbery"),
+  by_month %>% filter(calls_aggravated_assault == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_month %>% filter(calls_burglary == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Burglary"),
+  by_month %>% filter(calls_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Theft"), 
+  by_month %>% filter(calls_mv_theft == 1) %>% count(month = month_response, initiator) %>% mutate(type = "MV Theft"),
+  by_month %>% filter(calls_disorder == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Disorder"),
+  by_month %>% filter(calls_behavior == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_month %>% filter(calls_traffic == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Traffic"),
+  by_month %>% filter(calls_gun == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Gunshots"),
+  by_month %>% filter(calls_violent == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Violent Crime"),
+  by_month %>% filter(calls_property == 1) %>% count(month = month_response, initiator) %>% mutate(type = "Property Crime")
+)
+
+ggplot(by_month_type, aes(month, n, color = initiator, group = initiator)) +
+  geom_line(alpha = .5) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~type, scales = "free_y") + 
+  labs(title = "Austin 911 Calls by Month, Type, and Initiator (Cleaned)", x = "Month", y = "Calls") +
+  theme_minimal() 
+  
+```
+
+```{r}
+# heatmap all calls
+
+by_time <- calls_sorted %>%
+  mutate(hour = hour(mdy_hms(response_datetime)),
+         day_of_week = wday(mdy_hms(response_datetime))
+         )
+
+heatmap <- by_time %>%
+  count(day_of_week, hour, initiator)
+
+ggplot(heatmap, aes(hour, day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  facet_wrap(~initiator, scales = "free_y") + 
+  scale_x_continuous(breaks = seq(0, 23, by = 2)) +
+  theme_minimal() +
+   labs(title = "Austin 911 Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "Total Calls") 
+
+```
+
+```{r, fig.width = 20}
+by_time <- calls_sorted %>%
+  mutate(hour = hour(mdy_hms(response_datetime)),
+         day_of_week = wday(mdy_hms(response_datetime))
+         )
+
+heatmap_by_type <- bind_rows(
+  by_time %>% filter(calls_robbery == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Robbery"),
+  by_time %>% filter(calls_aggravated_assault == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Aggravated Assault"),
+  by_time %>% filter(calls_burglary == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Burglary"),
+  by_time %>% filter(calls_theft == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Theft"), 
+  by_time %>% filter(calls_mv_theft == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "MV Theft"),
+  by_time %>% filter(calls_disorder == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Disorder"),
+  by_time %>% filter(calls_behavior == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Susp/Unwanted"),
+  by_time %>% filter(calls_traffic == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Traffic"),
+  by_time %>% filter(calls_gun == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Gunshots"),
+  by_time %>% filter(calls_violent == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Violent Crime"),
+  by_time %>% filter(calls_property == 1) %>% count(day_of_week, hour, initiator) %>% mutate(type = "Property Crime")
+)
+
+
+ggplot(heatmap_by_type %>% filter(initiator == "Citizen"), 
+       aes(hour, day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free") +
+  theme_minimal() +
+   labs(title = "Austin 911 Officer Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "Total Calls") 
+
+
+ggplot(heatmap_by_type %>% filter(initiator == "Officer"),
+       aes(hour, day_of_week, fill = n)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free") +
+  theme_minimal() +
+   labs(title = "Austin 911 Citizen Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "Total Calls") 
+
+
+
+
+# By percent so we can see the smaller types
+
+heatmap_by_type_percent <- heatmap_by_type %>%
+  group_by(type) %>%
+  mutate( percent = (n / sum(n)) * 100) %>%
+  ungroup()
+
+ggplot(heatmap_by_type_percent %>% filter(initiator == "Citizen"), 
+       aes(hour, day_of_week, fill = percent)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free")  +
+  theme_minimal() +
+   labs(title = "Austin 911 Citizen Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "% of Types Total") 
+
+ggplot(heatmap_by_type_percent %>% filter(initiator == "Officer"),
+       aes(hour, day_of_week, fill = percent)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c(option = "magma") +
+  scale_x_continuous(breaks = seq(0, 23, by = 4)) +
+  facet_wrap(~type, scales = "free")  +
+  theme_minimal() +
+   labs(title = "Austin 911 Officer Call Volume Heatmap by Day and Hour", x = "Hour of Day", y = "Day of Week", fill = "% of Types Total") 
+
+# IF I WANT TO GO ABOVE AND BEYOND, FIND OUT WHY THE AGG ASSULT RATE FOR OFFICER INITIATION IS SO HIGH 
+```
+
+```{r}
+time_differences <- calls_sorted %>%
+  as_tibble() %>%
+  mutate(
+    time_arrive = as.numeric(interval(mdy_hms(response_datetime), mdy_hms(arrived_datetime)) / minutes(1)),
+    time_on_scene = as.numeric(interval(mdy_hms(arrived_datetime), mdy_hms(closed_datetime)) / minutes(1)),
+    time_total = as.numeric(interval(mdy_hms(response_datetime), mdy_hms(closed_datetime)) / minutes(1))
+  )
+
+
+time_differences_all <- bind_rows(
+  time_differences %>%
+    select(time_arrive, time_on_scene, time_total, initiator) %>%
+    mutate(type = "All Calls")
+)
+
+time_differences_all %>%
+  filter(time_arrive >= 0, time_arrive <= 120, time_on_scene >= 0, time_on_scene <= 120, time_total >= 0, time_total <= 120) %>%
+  ggplot() +
+    geom_histogram(aes(time_arrive, fill = "Time to Arrive"), color = "green", alpha = .4, binwidth = 5) +
+    geom_histogram(aes(time_on_scene, fill = "Time on Scene"), color = "red", alpha = .4, binwidth = 5) +
+    geom_histogram(aes(time_total, fill = "Total Time"), color = "blue", alpha = .4, binwidth = 5) + 
+  facet_wrap(~initiator)
+  theme_minimal() +
+  labs(title = "Austin 911 Call Time Differences by Initiator", x = "Minutes", y = "Number of Calls", fill = "Time Difference")
+
+```
+
+
+```{r}
+time_differences_by_type <- bind_rows(
+  time_differences %>% filter(calls_robbery == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Robbery"),
+  time_differences %>% filter(calls_aggravated_assault == 1) %>% select(time_arrive, time_on_scene, time_total, initiator)%>% mutate(type = "Aggravated Assault"),
+  time_differences %>% filter(calls_burglary == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Burglary"),
+  time_differences %>% filter(calls_theft == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Theft"), 
+  time_differences %>% filter(calls_mv_theft == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "MV Theft"),
+  time_differences %>% filter(calls_disorder == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Disorder"),
+  time_differences %>% filter(calls_behavior == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Susp/Unwanted"),
+  time_differences %>% filter(calls_traffic == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Traffic"),
+  time_differences %>% filter(calls_gun == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Gunshots"),
+  time_differences %>% filter(calls_violent == 1) %>% select(time_arrive, time_on_scene, time_total, initiator)  %>% mutate(type = "Violent Crime"),
+  time_differences %>% filter(calls_property == 1) %>% select(time_arrive, time_on_scene, time_total, initiator) %>% mutate(type = "Property Crime")
+)
+
+time_differences_by_type %>% filter(initiator == "Citizen") %>%
+  filter(time_arrive >= 0, time_arrive <= 120,
+         time_on_scene >= 0, time_on_scene <= 120,
+         time_total >= 0, time_total <= 120) %>%
+    ggplot() +
+      geom_histogram(aes(time_arrive, fill = "Time to Arrive"), binwidth = 5, alpha = .4, color = "green") +
+      geom_histogram(aes(time_on_scene, fill = "Time on Scene"), binwidth = 5, alpha = .4, color = "red") +
+      geom_histogram(aes(time_total, fill = "Total Time"), binwidth = 5, alpha = .4, color = "blue") +
+    facet_wrap(~type, scales = "free_y") + 
+    theme_minimal() +
+    labs(title = "Austin Citizen 911 Call Difference Between Response and Arrived Time by Type", x = "Minutes", y = "Number of Calls", fill = "Type")
+
+time_differences_by_type %>% filter(initiator == "Officer") %>%
+  filter(time_arrive >= 0, time_arrive <= 120,
+         time_on_scene >= 0, time_on_scene <= 120,
+         time_total >= 0, time_total <= 120) %>%
+    ggplot() +
+      geom_histogram(aes(time_arrive, fill = "Time to Arrive"), binwidth = 5, alpha = .4, color = "green") +
+      geom_histogram(aes(time_on_scene, fill = "Time on Scene"), binwidth = 5, alpha = .4, color = "red") +
+      geom_histogram(aes(time_total, fill = "Total Time"), binwidth = 5, alpha = .4, color = "blue") +
+    facet_wrap(~type, scales = "free_y") + 
+    theme_minimal() +
+    labs(title = "Austin Officer 911 Call Difference Between Response and Arrived Time by Type", x = "Minutes", y = "Number of Calls", fill = "Type")
+```
+
+```{r}
+dst_dates <- tibble(
+  year = 2014:2024,
+  dst_spring = as.Date(c("2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dst_averages_fall <- calls_sorted %>%
+  mutate( 
+    date = mdy(response_date),
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_to_fall = as.integer(date - dst_fall)) %>%
+  filter(days_to_fall == -21 | days_to_fall == 21) %>%
+  mutate(
+    relation = if_else(days_to_fall== -21, "3 Weeks Before", "3 Weeks After")
+  ) %>%
+  count(year, date, relation, hour = response_hour) %>%
+  group_by(relation, hour) %>%
+  summarize(average_calls = mean(n), .groups = "drop")
+
+before <- filter(dst_averages_fall, relation == "3 Weeks Before") %>%
+  mutate(density = average_calls / sum(average_calls))
+after <- filter(dst_averages_fall, relation == "3 Weeks After") %>%
+  mutate(density = average_calls / sum(average_calls))
+  
+ggplot() +
+  geom_col(data = before, aes(hour, density),
+           fill = "blue", alpha = .6, width = .8) +
+  geom_col(data = after, aes(hour, density),
+           fill = NA, color = "black", linewidth = .6, width = .8) +
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal() +
+  labs(title = "Average Calls by Hour Around Fall DST (2014-24)", x = "Hour", y = "Proportion of Calls")
+```
+
+```{r}
+dst_dates <- tibble(
+  year = 2014:2024,
+  dst_spring = as.Date(c("2014-03-09", "2015-03-08", "2016-03-13", "2017-03-12", "2018-03-11", "2019-03-10", "2020-03-08", "2021-03-14", "2022-03-13", "2023-03-12", "2024-03-10")),
+  dst_fall = as.Date(c("2014-11-02", "2015-11-01", "2016-11-06", "2017-11-05", "2018-11-04", "2019-11-03", "2020-11-01", "2021-11-07", "2022-11-06", "2023-11-05", "2024-11-03"))
+)
+
+dst_averages_spring <- calls_sorted %>%
+  mutate( 
+    date = mdy(response_date),
+    year = year(date)
+    ) %>%
+  left_join(dst_dates, by = "year") %>%
+  mutate(days_to_spring = as.integer(date - dst_spring)) %>%
+  filter(days_to_spring == -21 | days_to_spring == 21) %>%
+  mutate(
+    relation = if_else(days_to_spring == -21, "3 Weeks Before", "3 Weeks After")
+  ) %>%
+  count(year, date, relation, hour = response_hour) %>%
+  group_by(relation, hour) %>%
+  summarize(average_calls = mean(n), .groups = "drop")
+
+before <- filter(dst_averages_spring, relation == "3 Weeks Before") %>%
+  mutate(density = average_calls / sum(average_calls))
+after <- filter(dst_averages_spring, relation == "3 Weeks After") %>%
+  mutate(density = average_calls / sum(average_calls))
+  
+ggplot() +
+  geom_col(data = before, aes(hour, density),
+           fill = "blue", alpha = .6, width = .8) +
+  geom_col(data = after, aes(hour, density),
+           fill = NA, color = "black", linewidth = .6, width = .8) +
+  scale_x_continuous(breaks = 0:23) +
+  theme_minimal() +
+  labs(title = "Average Calls by Hour Around Spring DST (2014-24)", x = "Hour", y = "Proportion of Calls")
+           
+
+```
+

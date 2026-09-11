@@ -1,0 +1,246 @@
+---
+title: "Austin 911 Calls"
+author: Matthew Becker
+date: 06/24/2026
+output: 
+  html_notebook: 
+    code_folding: hide
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(mosaic)
+library(data.table)
+library(lubridate)
+```
+
+```{r, include=FALSE}
+list.files("data/raw", full.names=TRUE)
+
+calls <- fread("data/raw/APD_Computer_Aided_Dispatch_Incidents.csv") #dataset renamed to calls
+
+dim(calls) #rows & columns 
+names(calls) #column titles
+```
+```{r, include=FALSE}
+# datetime->date & time
+
+# renaming columns to change
+names(calls) [6] <- "response_datetime" 
+names(calls) [11] <- "arrived_datetime"
+names(calls) [12] <- "closed_datetime"
+
+
+# breaking columns by index
+calls <- calls %>%
+  mutate(response_time = str_sub(response_datetime,12,23),
+         response_date = str_sub(response_datetime,1,11),
+         arrived_time = str_sub(arrived_datetime,12,23),
+         arrived_date = str_sub(arrived_datetime,1,11),
+         closed_time = str_sub(closed_datetime,12,23),
+         closed_date = str_sub(closed_datetime,1,11))
+
+# checking my work
+head(calls$response_time)
+head(calls$response_date)
+head(calls$arrived_time)
+head(calls$arrived_date)
+head(calls$closed_time)
+head(calls$closed_date)
+
+head(calls)
+```
+
+```{r fig.width=15, fig.height=5}
+# minute of the hour distribution and frequency
+
+# only getting the minute integers from the time of day
+calls <- calls %>%
+  mutate(
+    response_minute = as.integer(str_sub(response_time,4,5)),
+    arrived_minute = as.integer(str_sub(arrived_time,4,5)),
+    closed_minute = as.integer(str_sub(closed_time,4,5))
+  )
+
+# distribution of all times together
+by_minute_long <- bind_rows(
+  calls %>% count(minute=response_minute) %>% mutate(type = "Response"),
+  calls %>% count(minute=arrived_minute) %>% mutate(type = "Arrived"),
+  calls %>% count(minute=closed_minute) %>% mutate(type = "Closed")
+)
+by_minute_long
+
+# distribution of reported
+by_minute_response <- calls %>% count(minute = response_minute)
+  by_minute_response
+  
+# distribution of arrived
+by_minute_arrived <- calls %>% count(minute = arrived_minute)
+  by_minute_arrived
+  
+# distribution of closed
+by_minute_closed <- calls %>% count(minute = closed_minute)
+  by_minute_closed
+
+# graphed distribution of 911 times by hour
+ggplot(by_minute_long, aes(minute, n, color = type)) +
+  geom_line() + 
+  scale_x_continuous(breaks = 0:59) +
+  labs(title = "Austin 911 Times by Minute of the Hour", x = "Minute", y = "Calls")
+```
+
+```{r, include=FALSE}
+# hour of the day distribution and frequency
+names(calls)
+
+
+names(calls) [10] <- "response_hour"
+  head(calls$response_hour)
+  
+# response hour
+by_response_hour <- calls %>% count(hour = response_hour)
+ 
+# changing arrived and closed time into 24 hour clock 
+calls <- calls %>% 
+  mutate(
+    arrived_hour = as.numeric(format(strptime(arrived_time, format = "%I:%M:%S %p"), "%H")),
+    closed_hour = as.numeric(format(strptime(closed_time, format = "%I:%M:%S %p"), "%H"))
+  )
+```
+
+
+```{r}
+# distribution of all times together
+by_hour_long <- bind_rows(
+  calls %>% count(hour = response_hour) %>% mutate(type = "Response"),
+  calls %>% count(hour = arrived_hour) %>% mutate(type = "Arrived"),
+  calls %>% count(hour = closed_hour) %>% mutate(type = "Closed")
+)
+by_hour_long
+
+# distribution of response
+by_hour_response <- calls %>% count(hour = response_hour)
+  by_hour_response
+
+# distribution of arrived
+by_hour_arrived <- calls %>% count(hour = arrived_hour)
+  by_hour_arrived
+
+# distribution of closed
+by_hour_closed <- calls %>% count(hour = closed_hour)
+  by_hour_closed
+
+# graphed distribution of 911 times by hour
+ggplot(by_hour_long, aes(hour, n, color = type)) +
+  geom_line() + 
+  scale_x_continuous(breaks = 0:23) +
+  labs(title = "Austin 911 Times by Hour of Day", x = "Hour of Day", y = "Calls")
+  
+```
+
+```{r}
+# day of the week distribution and frequency
+
+names(calls) [9] <- "day_week"
+
+# frequency of calls by day of the week
+by_day_week <- calls %>% count(day = day_week)
+  by_day_week
+  
+# fix the order of days 
+  by_day_week$day <- factor(by_day_week$day, 
+                            levels = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))
+  
+# graph of distribution of 911 times by hour
+ggplot(by_day_week, aes(day, n, group = 1)) +
+  geom_line() +
+  labs(title = "Austin 911 Calls by Day of the Week", x = "Day", y = "Calls") 
+
+```
+```{r, warning=FALSE, fig_width = 30}
+# calls by day-year distribution and frequency 
+
+by_date <- calls %>%
+  mutate(
+    date_response = as_date(mdy_hms(response_datetime)),
+    date_arrived = as_date(mdy_hms(arrived_datetime)),
+    date_closed = as_date(mdy_hms(closed_datetime)))
+  
+by_date_long <- bind_rows(
+  by_date %>% count(date = date_response) %>% mutate(type = "Response"),
+  by_date %>% count(date = date_arrived) %>% mutate(type = "Arrived"),
+  by_date %>% count(date = date_closed) %>% mutate(type = "Closed"))
+by_date_long
+
+# distribution of response
+by_date_response <- by_date %>% count(date = date_response)
+  by_date_response
+
+# distribution of arrived
+by_date_arrived <- by_date %>% count(date = date_arrived)
+  by_date_arrived
+
+# distribution of closed
+by_date_closed <- by_date %>% count(date = date_closed)
+  by_date_closed
+
+# graphed distribution of 911 times by day of year
+by_date_long %>%
+  mutate(date = as_date(date)) 
+
+ggplot(by_date_long, aes(date, n, color = type)) +
+  geom_line(alpha = .7) + 
+  scale_x_date(date_labels = "%b-%d-%y", date_breaks = "4 months") +
+  labs(title = "Austin 911 Times by Day Timeline", x = "Date", y = "Calls") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5)) 
+  
+
+```
+
+
+
+```{r, warning=FALSE}
+# calls by month distribution and frequency
+
+names(calls) [8] <- "month_year"
+
+# count of calls per month
+by_month <- calls %>% 
+  mutate (
+    month_response = floor_date(mdy_hms(response_datetime), "month"),
+    month_arrived = floor_date(mdy_hms(arrived_datetime), "month"),
+    month_closed = floor_date(mdy_hms(closed_datetime), "month")
+  )
+  
+  
+by_month_long <- bind_rows(
+  by_month %>% count(month = month_response) %>% mutate(type = "Response"),
+  by_month %>% count(month = month_arrived) %>% mutate(type = "Arrived"),
+  by_month %>% count(month = month_closed) %>% mutate(type = "Closed"))
+by_month_long
+
+# distribution of response
+by_month_response <- by_month %>% count(month = month_response)
+  by_month_response
+
+# distribution of arrived
+by_month_arrived <- by_month %>% count(month = month_arrived)
+  by_month_arrived
+
+# distribution of closed
+by_month_closed <- by_month %>% count(month = month_closed)
+  by_month_closed
+
+# plot calls per month
+ggplot(by_month_long, aes(month, n, color = type)) +
+  geom_line() +
+  scale_x_date(date_labels = "%b-%y", date_breaks = "4 months") +
+  labs(title = "Austin 911 Calls by Month Timeline", x = "Month", y = "Calls") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5)) 
+  
+
+```
+
+
